@@ -33,7 +33,8 @@ Because `my_custom_cache` is a relative override, it uses the target's parent di
 
 The `:mkdir` directive instructs the utility to purely create empty directories.
 - If a root level `:mkdir` path is relative, it resolves directly against the root of the **RAM Drive**.
-- Nested `:mkdir` paths resolve against their parent `:mkdir` paths on the RAM Drive.
+- If a nested `:mkdir` path is relative, it resolves against the parent source path mirrored onto the RAM target. For example, under `%LOCALAPPDATA%\Steam`, `"logs"` becomes `%RAMDrive%\Users\...\AppData\Local\Steam\logs` rather than `%LOCALAPPDATA%\Steam\logs`.
+- Additional nested entries inside a `:mkdir` tree continue from the RAM-side path that was just created.
 
 ### 4. File Inclusions (`<file`)
 
@@ -48,10 +49,12 @@ These special keys must be defined at the root level of your YAML configuration.
 - **`:env`:** Define dynamic environment variables to use in path resolutions. Supports recursive expansion. If a key starts with `?` (e.g. `"?APPDATA"`), the variable is only set if it's currently undefined or empty in the OS environment.
 - **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with standard error to a specified file. If the path is relative, it resolves against the configuration directory (`configDir`). The absolute evaluated path of the log will be exported to the `LOG` environment variable for spawned tasks. If `:log` is not provided in the YAML configure, the `LOG` environment variable is used as the file path if present. Alternatively, output will strictly default to `stderr` only.
 - **`:exec_pre` / `:exec_post`:** Arrays of commands to run *before* or *after* the directory processing phase. Commands are parsed with Windows command-line rules and started directly, without wrapping them in `cmd.exe /c`. All standard output and errors are captured to the log, and the exit code is logged as well. Environment variables specified or expanded in `:env` are applied prior to execution. If you specifically need shell syntax, invoke the shell explicitly in the config.
+- **`:uselinkstarget`:** Boolean top-level switch. When enabled, any source that is already a junction/symlink keeps its current destination instead of being repointed to the RAM-disk-derived target. If that preserved destination is missing, the utility recreates it before leaving the existing link in place. Empty value is treated as enabled, so both `":uselinkstarget": true` and a bare `":uselinkstarget":` work.
 
 ## Semantics Glossary
 
 - **Empty value:** If the source exists and isn't already a link, the tool will construct the RAM disk target, rename the source (appending a suffix with a date-time stamp), and create a junction/symlink to the RAM structure. If the source is already a junction/symlink that points to the intended target, the tool leaves that link in place and skips recreating it.
+- **Existing links with `:uselinkstarget`:** When that root directive is enabled, an already-linked source keeps pointing where it already points, even if that destination is outside the RAM drive. The tool still creates the preserved destination when it is missing.
 - **`?` Prefix:** Checks for existence. The app will skip logic for the current key if the underlying localized source doesn't exist on disk, perfect for keeping robust multi-machine lists without unused redundant directories and links.
 - **`* and ?` Globs:** Strings containing wildcards are appropriately expanded into active paths at runtime. Except you can't start with a key with "?", as it is reserved for the existence check. But you can put "?" after "\\" to a parent key to use it as a first-character wildcard:
 ```yaml
@@ -59,6 +62,7 @@ These special keys must be defined at the root level of your YAML configuration.
   "?cache": # will check if the exact directory "cache" exists, and skip if it doesn't
   ".\\?cache": # will actually search for directories matching "?cache" pattern (any 1 first char, followed by "cache") and process them
 ```
+- Globs use Go `filepath.Glob` / `filepath.Match` rules, not `cmd.exe` wildcard rules. In particular, `*.*` only matches names that contain a literal dot, so it will **not** match directories like `selectivesyncview` or `dbid%3A...`; use `*` if you mean “any child name”.
 - Globs only process existing full-path matches. If you want to create the same child path under every matched parent, put the wildcard on the parent key and nest the child path beneath it, for example:
 ```yaml
 "Storage\\ext\\*":

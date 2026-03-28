@@ -20,6 +20,7 @@
   - ATTRIB +I "%RAMDrive%\*.*" /S /D /L
 # ":exec_post":
 #   - COMPACT /C "%Log%" /Q
+# ":uselinkstarget": true  # keep existing junction/symlink targets instead of repointing them to RAM
 ":env":
   # Env vars starting with "?" are only set if they are not yet defined or empty
   # Note that the order of items in the env section is not guaranteed,
@@ -29,6 +30,7 @@
   "?LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
   "?USERPROFILE": "d:\\Users\\LogicDaemon"
 ":log": "%RAMDrive%\\RAMDiskLinker.log"  # if relative, base is configDir
+":uselinkstarget": true  # if true, when updating links, do not change the target path, but only create the destination if it doesn't exist
 
 ":mkdir":
   "Temp":
@@ -53,11 +55,45 @@
 "?c:\\OEM\\CareCenter":
 "?c:\\OEM\\Preload":
 
-# posix-like cache paths
-"%USERPROFILE%\\.cache":
-  # Target override: base stays on RAM, but subdir is redirected
-  "opencode":
-    ">": "%LOCALAPPDATA%\\opencode\\cache"
+# ProgramData / system-level caches created on RAM when present
+"%ProgramData%":
+  "?GOG.com\\Galaxy":
+    "webcache\\common":
+    "lock-files":
+    "logs":
+    "crashdumps":
+  "?Dropbox":
+    "Update\\Log":
+  "?NVIDIA Corporation":
+    "?NVIDIA app":
+      "Installer\\Logs":
+      "Logs":
+      "MessageBus":
+      "NvContainer":
+      "SessionLogs":
+      "UXD":
+    "CrashDumps":
+    "DisplayDriverRAS":
+    "Drs":
+    "?FrameViewSDK":
+    "GameSessionTelemetry":
+    "?GfnRuntimeSdk":
+    "NVIDIA Broadcast":
+    "?NVIDIA GeForce Experience":
+    "NvProfileUpdaterPlugin":
+    "NvTelemetry":
+    "nvtopps":
+    "NvVAD":
+    "RX":
+    "ShadowPlay":
+    "umdlogs":
+
+"%USERPROFILE%":
+  # posix-like cache paths
+  ".cache":
+    # Target override: base stays on RAM, but subdir is redirected
+    "opencode":
+      ">": "%LOCALAPPDATA%\\opencode\\cache"
 
   # GPT4All models: link back to first existing model store instead of RAM copy
   "gpt4all":
@@ -65,31 +101,21 @@
       - "%USERPROFILE%\\GPT4All\\Models"
       - "d:\\Distributives\\LLMs\\gguf"
 
-"?%USERPROFILE%\\.openjfx\\cache":
+  "?.openjfx\\cache":
 
-# Low rights (LocalLow)
-"%USERPROFILE%\\AppData\\LocalLow":
-  "?webviewdata":
-  "?Sun\\Java\\Deployment":
-    "cache":
-    "tmp":
-    "log":
+  # Low rights (LocalLow)
+  "AppData\\LocalLow":
+    "?webviewdata":
+    "?Sun\\Java\\Deployment":
+      "cache":
+      "tmp":
+      "log":
 
-# SecuriSync spools (only if per-folder .SecuriSync exists)
-"%USERPROFILE%":
+  # SecuriSync spools (only if per-folder .SecuriSync exists)
   "?Pictures\\.SecuriSync\\Spool Files":
   "?Videos\\.SecuriSync\\Spool Files":
   "?Music\\.SecuriSync\\Spool Files":
   "?My SecuriSync\\.SecuriSync\\Spool Files":
-
-# AppData\Roaming level (APPDATA)
-"?%APPDATA%\\npm-cache":
-
-"?%APPDATA%\\obs-studio":
-  "crashes":
-  "logs":
-  "profiler_data":
-  "updates":
 
 # Electron-style apps (list mirrors the FOR loop) reuse a common cache list
 ":defs":
@@ -117,7 +143,7 @@
     "?User Data":
       "GraphiteDawnCache":
       "GrShaderCache":
-      "Default":
+      "?Default":
         "<Chrome_Profile_Temporary.txt":
         "Storage\\ext\\*":
           "<Chrome_Profile_Temporary.txt":
@@ -125,58 +151,44 @@
         "<Chrome_Profile_Temporary.txt":
         "Storage\\ext\\*":
           "<Chrome_Profile_Temporary.txt":
+      "?System Profile":
+        "<Chrome_Profile_Temporary.txt":
+        "Storage\\ext\\*":
+          "<Chrome_Profile_Temporary.txt":
       "Guest Profile":
       "?Crashpad":
       "?ShaderCache":
 
+# AppData\Roaming level (APPDATA)
 "%APPDATA%":
   "?Beyond-All-Reason": *electron_cache
+  "?breach-protocol-autosolver": *electron_cache
   "?Code - Insiders": *electron_cache
   "?Code": *electron_cache
   "?Cursor": *electron_cache
   "?discord": *electron_cache
   "?Dropbox": *electron_cache
-  "?Dropbox\\Partitions\\*.*": *electron_cache
+  "?Dropbox\\Partitions\\*": *electron_cache
   "?Intermedia Unite": *electron_cache
-  "?obs-studio\\plugin_config\\obs-browser": *electron_cache
-  "?obs-studio\\plugin_config\\obs-browser\\obs_profile_cookies\\*": *electron_cache
+  "?npm-cache":
   "?update-hub": *electron_cache
-
-# ProgramData / system-level caches created on RAM when present
-"?%ProgramData%\\GOG.com\\Galaxy":
-  "webcache\\common":
-  "lock-files":
-  "logs":
-  "crashdumps":
-"?%ProgramData%\\Dropbox":
-  "Update\\Log":
-"?%ProgramData%\\NVIDIA Corporation":
-  "?NVIDIA app":
-    "Installer\\Logs":
-    "Logs":
-    "MessageBus":
-    "NvContainer":
-    "SessionLogs":
-    "UXD":
-  "CrashDumps":
-  "DisplayDriverRAS":
-  "Drs":
-  "?FrameViewSDK":
-  "GameSessionTelemetry":
-  "?GfnRuntimeSdk":
-  "NVIDIA Broadcast":
-  "?NVIDIA GeForce Experience":
-  "NvProfileUpdaterPlugin":
-  "NvTelemetry":
-  "nvtopps":
-  "NvVAD":
-  "RX":
-  "ShadowPlay":
-  "umdlogs":
+  "?LosslessCut": *electron_cache
+  "?Netmarble Launcher_EPIC": *electron_cache
+  "?omniverse-launcher": *electron_cache
+  "?Vortex": *electron_cache
+  "?obs-studio":
+    "crashes":
+    "logs":
+    "profiler_data":
+    "updates":
+    "plugin_config":
+      "?obs-browser": *electron_cache
+      "?obs-browser\\obs_profile_cookies\\*": *electron_cache
 
 # Local caches (%LOCALAPPDATA%) grouped to reduce repetition
 "%LOCALAPPDATA%":
   "cache":
+  "IconCache.db":
   "?uv\\cache":
   "Scripts\\software_update\\Downloader\\.mypy_cache":
     ">": "%RAMDrive%\\Temp\\.mypy_cache"
@@ -187,6 +199,8 @@
   "?gopls":
   "?go-build":
   "?goimports":
+  "?com.novabench.client\\EBWebView":
+  "?ollama app.exe\\EBWebView":
   "Microsoft":
     "?Edge":
     "?Internet Explorer":
@@ -195,6 +209,7 @@
       "cache":
       "logs":
     "?OneDrive":
+      "EBWebView":
       "logs":
       "setup\\logs":
     "Terminal Server Client":
@@ -204,7 +219,9 @@
       "INetCache":
       "INetCookies":
       "Notifications":
-      "WebCache":
+      # Do not uncomment, breaks hh.exe
+      # "WebCache":
+      "SharedWebView\\EBWebView":
 
   "?AMD":
     "DxCache":
@@ -213,6 +230,11 @@
     "VkCache":
 
   "?NVIDIA Corporation":
+    "?NVIDIA app":
+      "CefCache":
+      "UXD":
+    "?NVIDIA Overlay":
+      "CefCache":
     "?NVIDIA Notification":
     "?NVIDIA Share":
       "?CefCache":
@@ -248,6 +270,7 @@
 
   # Steam: create a few cache folders on RAM; then move the whole Steam local tree
   "?Steam":
+    ".":
     # Entire Steam folder linked, but also some subdirs are created
     ":mkdir":
       "appcache\\httpcache":
@@ -257,29 +280,40 @@
       "htmlcache":
       "logs":
 
-  "?Programs\\Tor Browser":
-    "Browser\\TorBrowser\\Data\\Browser":
+  "Programs":
+    "?Tor Browser":
+      "Browser\\TorBrowser\\Data\\Browser":
         "Caches":
         "profile.*\\storage":
 
-  "?Programs\\jdownloader":
-    "logs":
-    "tmp":
-
-  "?Programs\\TeamSpeak":
-    "config":
-      "crashdumps":
+    "?jdownloader":
       "logs":
-      "qtwebengine_cache":
-      "qtwebengine_persistant_storage":
-        "GPUCache":
-        "Platform Notifications":
-        "Session Storage":
+      "tmp":
+
+    "?TeamSpeak":
+      "config":
+        "crashdumps":
+        "logs":
+        "qtwebengine_cache":
+        "qtwebengine_persistant_storage":
+          "GPUCache":
+          "Platform Notifications":
+          "Session Storage":
+
+    "Telegrams\\*":
+      "tdata\\user_data\\wvbots\\EBWebView":
+      "tdata\\webview\\EBWebView":
 
   "?EpicGamesLauncher":
-    "Saved\\Config\\CrashReportClient":
-    "Saved\\Logs":
-    "Saved\\webcache_4430":
+    "Saved":
+      "Config\\CrashReportClient":
+      "Logs":
+      "webcache_4430":
+      
+  "?Epic Games":
+    "EOSOverlay\\BrowserCache":
+  
+  "?M1\\Saved\\webcache_4430":
 
   "?EpicOnlineServicesUIHelper":
     "Saved\\Logs":
@@ -290,17 +324,21 @@
   "Mozilla\\Firefox\\Profiles\\*":
 
   # Chrome-based apps: per-app User Data handling
-  "Google\\Chrome": *chrome_user_data
-  "Google\\Chrome Beta": *chrome_user_data
-  "Chromium": *chrome_user_data
-  "Vivaldi": *chrome_user_data
-  "Microsoft\\Olk\\EBWebView": *chrome_user_data
+  "?Google\\Chrome": *chrome_user_data
+  "?Google\\Chrome Beta": *chrome_user_data
+  "?Chromium": *chrome_user_data
+  "?Vivaldi": *chrome_user_data
+  "?Microsoft\\Olk\\EBWebView": *chrome_user_data
 
   # Windows AppX caches
   "Packages\\*":
-    "AC\\INetCache":
-    "AC\\INetHistory":
-    "AC\\Temp":
-    "LocalState\\Cache":
-    "LocalState\\LiveTile":
+    "AC":
+      "INetCache":
+      "INetHistory":
+      "Temp":
+    "LocalState":
+      "Cache":
+      "LiveTile":
+      "?UDF\\EBWebView":
+      "?EBWebView":
     "TempState":

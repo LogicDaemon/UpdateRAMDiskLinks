@@ -24,17 +24,18 @@ const (
 )
 
 var (
-	datetimeStr    = time.Now().Format("20060102_150405.00")
-	ramDrive       string
-	timeoutSeconds float64 = -1 // unlimited by default
-	configDir      string
-	customEnv      = make(map[string]string)
-	customEnvMu    sync.RWMutex
-	linesCache     = make(map[string]cachedLines)
-	linesCacheMu   sync.RWMutex
-	aclJobs        = make(chan aclJob, 100)
-	aclJobsWg      sync.WaitGroup
-	aclDone        = make(chan struct{})
+	datetimeStr            = time.Now().Format("20060102_150405.00")
+	ramDrive               string
+	timeoutSeconds         float64 = -1 // unlimited by default
+	configDir              string
+	useExistingLinksTarget bool
+	customEnv              = make(map[string]string)
+	customEnvMu            sync.RWMutex
+	linesCache             = make(map[string]cachedLines)
+	linesCacheMu           sync.RWMutex
+	aclJobs                = make(chan aclJob, 100)
+	aclJobsWg              sync.WaitGroup
+	aclDone                = make(chan struct{})
 )
 
 type aclJob struct {
@@ -283,26 +284,43 @@ func expandEnv(s string) (string, error) {
 	return buf.String(), nil
 }
 
+func mirrorMkdirBasePath(basePath string) string {
+	if basePath == "" || !filepath.IsAbs(basePath) {
+		return basePath
+	}
+
+	return getRAMTarget(basePath)
+}
+
+func resolveAndCreateMkdir(dirPath, resolvedBasePath string) (string, bool) {
+	dirPath, err := expandEnv(dirPath)
+	if err != nil {
+		log.Printf("Skipping mkdir for '%s': %v\n", dirPath, err)
+		return "", false
+	}
+
+	var fullPath string
+	if filepath.IsAbs(dirPath) {
+		fullPath = dirPath
+	} else if resolvedBasePath != "" {
+		fullPath = filepath.Join(resolvedBasePath, dirPath)
+	} else {
+		fullPath = filepath.Join(ramDriveRoot(), dirPath)
+		log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
+	}
+
+	createDirectory(fullPath, "")
+	return fullPath, true
+}
+
 func mkDirs(valNode *yaml.Node, basePath string) {
+	resolvedBasePath := mirrorMkdirBasePath(basePath)
+
 	if valNode.Kind == yaml.ScalarNode {
 		if valNode.Value == "" {
 			return
 		}
-		dirPath, err := expandEnv(valNode.Value)
-		if err != nil {
-			log.Printf("Skipping mkdir for '%s': %v\n", valNode.Value, err)
-			return
-		}
-		var fullPath string
-		if filepath.IsAbs(dirPath) {
-			fullPath = dirPath
-		} else if basePath != "" {
-			fullPath = filepath.Join(basePath, dirPath)
-		} else {
-			fullPath = filepath.Join(ramDriveRoot(), dirPath)
-			log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
-		}
-		createDirectory(fullPath, "")
+		resolveAndCreateMkdir(valNode.Value, resolvedBasePath)
 	} else if valNode.Kind == yaml.SequenceNode {
 		for _, n := range valNode.Content {
 			mkDirs(n, basePath)
@@ -312,23 +330,10 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 			keyNode := valNode.Content[j]
 			childNode := valNode.Content[j+1]
 
-			dirPath, err := expandEnv(keyNode.Value)
-			if err != nil {
-				log.Printf("Skipping mkdir for '%s': %v\n", keyNode.Value, err)
+			fullPath, ok := resolveAndCreateMkdir(keyNode.Value, resolvedBasePath)
+			if !ok {
 				continue
 			}
-
-			var fullPath string
-			if filepath.IsAbs(dirPath) {
-				fullPath = dirPath
-			} else if basePath != "" {
-				fullPath = filepath.Join(basePath, dirPath)
-			} else {
-				fullPath = filepath.Join(ramDriveRoot(), dirPath)
-				log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
-			}
-
-			createDirectory(fullPath, "")
 
 			if childNode.Kind != 0 && (childNode.Kind != yaml.ScalarNode || childNode.Value != "") {
 				mkDirs(childNode, fullPath)
@@ -357,7 +362,7 @@ func processNode(basePath string, node *yaml.Node) {
 			case ":mkdir":
 				mkDirs(valNode, basePath)
 				continue
-			case ":log", ":env", ":exec_pre", ":exec_post":
+			case ":log", ":env", ":exec_pre", ":exec_post", ":uselinkstarget":
 				// Handled at root level beforehand
 				continue
 			default:
@@ -433,6 +438,34 @@ func readLinesMemoized(path string) ([]string, error) {
 	linesCacheMu.Unlock()
 
 	return lines, err
+}
+
+func parseDirectiveBool(name string, node *yaml.Node) (bool, error) {
+	if node == nil {
+		return true, nil
+	}
+
+	if node.Kind == yaml.AliasNode {
+		return parseDirectiveBool(name, node.Alias)
+	}
+
+	if node.Kind != yaml.ScalarNode {
+		return false, fmt.Errorf("%s expects a boolean scalar or empty value, got kind %v", name, node.Kind)
+	}
+
+	value := strings.TrimSpace(node.Value)
+	if value == "" {
+		return true, nil
+	}
+
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s expects a boolean value, got %q", name, node.Value)
+	}
 }
 
 func hasGlobMeta(path string) bool {
@@ -627,6 +660,15 @@ func normalizeLinkTargetPath(source, target string) (string, error) {
 	return normalizeWindowsPathPrefix(filepath.Clean(absoluteTarget)), nil
 }
 
+func currentLinkTarget(source string) (string, error) {
+	target, err := os.Readlink(source)
+	if err != nil {
+		return "", err
+	}
+
+	return normalizeLinkTargetPath(source, target)
+}
+
 func linkPointsToTarget(source, target string) (bool, error) {
 	currentTarget, err := os.Readlink(source)
 	if err != nil {
@@ -721,11 +763,10 @@ func mkdirWithACL(srcDir, dstDir string) error {
 }
 
 func makeLink(source, target string) {
-	log.Printf("Linking %s -> %s\n", source, target)
-
 	var isFile bool
 	sourceExists := true
 	sourceIsLink := false
+	effectiveTarget := target
 	info, err := os.Lstat(source)
 
 	if err == nil {
@@ -748,30 +789,46 @@ func makeLink(source, target string) {
 		return
 	}
 
+	if sourceExists && sourceIsLink && useExistingLinksTarget {
+		existingTarget, err := currentLinkTarget(source)
+		if err != nil {
+			log.Printf("Failed to inspect existing link target for %s: %v\n", source, err)
+		} else {
+			effectiveTarget = existingTarget
+		}
+	}
+
+	log.Printf("Linking %s -> %s\n", source, effectiveTarget)
+
 	// 1. create target on RAM
 	if isFile {
-		if err := mkdirWithACL(filepath.Dir(source), filepath.Dir(target)); err != nil {
-			log.Printf("Failed to create target directories for %s: %v\n", target, err)
+		if err := mkdirWithACL(filepath.Dir(source), filepath.Dir(effectiveTarget)); err != nil {
+			log.Printf("Failed to create target directories for %s: %v\n", effectiveTarget, err)
 		}
 		// Touch target file if it doesn't exist
-		if _, err := os.Stat(target); os.IsNotExist(err) {
-			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if _, err := os.Stat(effectiveTarget); os.IsNotExist(err) {
+			f, err := os.OpenFile(effectiveTarget, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 			if err == nil {
 				f.Close()
 			}
 		}
 	} else {
-		if err := mkdirWithACL(source, target); err != nil {
-			log.Printf("Failed to create target directories for %s: %v\n", target, err)
+		if err := mkdirWithACL(source, effectiveTarget); err != nil {
+			log.Printf("Failed to create target directories for %s: %v\n", effectiveTarget, err)
 		}
 	}
 
 	if sourceExists && sourceIsLink {
-		pointsToTarget, err := linkPointsToTarget(source, target)
+		if useExistingLinksTarget {
+			log.Printf("Keeping existing link for %s -> %s\n", source, effectiveTarget)
+			return
+		}
+
+		pointsToTarget, err := linkPointsToTarget(source, effectiveTarget)
 		if err != nil {
 			log.Printf("Failed to inspect existing link target for %s: %v\n", source, err)
 		} else if pointsToTarget {
-			log.Printf("Skipping update for %s; already points to %s\n", source, target)
+			log.Printf("Skipping update for %s; already points to %s\n", source, effectiveTarget)
 			return
 		}
 	}
@@ -811,14 +868,14 @@ func makeLink(source, target string) {
 
 	// 3. create junction/symlink at the source path pointing to the RAM target
 	if isFile {
-		if err := os.Symlink(target, source); err != nil {
-			log.Printf("Failed to create file symlink %s -> %s: %v\n", source, target, err)
+		if err := os.Symlink(effectiveTarget, source); err != nil {
+			log.Printf("Failed to create file symlink %s -> %s: %v\n", source, effectiveTarget, err)
 		}
 	} else {
-		if err := junction.Create(target, source); err != nil {
+		if err := junction.Create(effectiveTarget, source); err != nil {
 			// Fallback to directory symlink if junction fails
-			if errSym := os.Symlink(target, source); errSym != nil {
-				log.Printf("Failed to create junction/symlink %s -> %s: %v\n", source, target, err)
+			if errSym := os.Symlink(effectiveTarget, source); errSym != nil {
+				log.Printf("Failed to create junction/symlink %s -> %s: %v\n", source, effectiveTarget, err)
 			}
 		}
 	}
@@ -873,6 +930,16 @@ func main() {
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":env" {
 			processEnvBlock(doc.Content[i+1])
+		}
+	}
+
+	useExistingLinksTarget = false
+	for i := 0; i < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == ":uselinkstarget" {
+			useExistingLinksTarget, err = parseDirectiveBool(":uselinkstarget", doc.Content[i+1])
+			if err != nil {
+				log.Fatalf("Error parsing :uselinkstarget: %v\n", err)
+			}
 		}
 	}
 
