@@ -39,18 +39,19 @@ The `:mkdir` directive instructs the utility to purely create empty directories.
 
 The `<` prefix reads lines from a text file and dynamically injects them as keys. 
 - If the provided filename is relative, it resolves against the directory where the configuration file was loaded from (`configDir`), completely ignoring the source path currently in context.
+- Included paths still follow normal glob semantics: if the resulting full path contains a wildcard, it is only processed when that full path already exists.
 
 ## Root Directives
 
 These special keys must be defined at the root level of your YAML configuration.
 
 - **`:env`:** Define dynamic environment variables to use in path resolutions. Supports recursive expansion. If a key starts with `?` (e.g. `"?APPDATA"`), the variable is only set if it's currently undefined or empty in the OS environment.
-- **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with your console to a specified file. If the path is relative, it resolves against the configuration directory (`configDir`).
-- **`:exec_pre` / `:exec_post`:** Arrays of shell commands (executed via `cmd.exe /c`) to run *before* or *after* the directory processing phase. All standard output and errors are captured to the log. Environment variables specified or expanded in `:env` are applied prior to execution.
+- **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with standard error to a specified file. If the path is relative, it resolves against the configuration directory (`configDir`). The absolute evaluated path of the log will be exported to the `LOG` environment variable for spawned tasks. If `:log` is not provided in the YAML configure, the `LOG` environment variable is used as the file path if present. Alternatively, output will strictly default to `stderr` only.
+- **`:exec_pre` / `:exec_post`:** Arrays of commands to run *before* or *after* the directory processing phase. Commands are parsed with Windows command-line rules and started directly, without wrapping them in `cmd.exe /c`. All standard output and errors are captured to the log, and the exit code is logged as well. Environment variables specified or expanded in `:env` are applied prior to execution. If you specifically need shell syntax, invoke the shell explicitly in the config.
 
 ## Semantics Glossary
 
-- **Empty value:** If the source exists and isn't already a link, the tool will construct the RAM disk target, rename the source (appending a suffix with a date-time stamp), and create a junction/symlink to the RAM structure.
+- **Empty value:** If the source exists and isn't already a link, the tool will construct the RAM disk target, rename the source (appending a suffix with a date-time stamp), and create a junction/symlink to the RAM structure. If the source is already a junction/symlink that points to the intended target, the tool leaves that link in place and skips recreating it.
 - **`?` Prefix:** Checks for existence. The app will skip logic for the current key if the underlying localized source doesn't exist on disk, perfect for keeping robust multi-machine lists without unused redundant directories and links.
 - **`* and ?` Globs:** Strings containing wildcards are appropriately expanded into active paths at runtime. Except you can't start with a key with "?", as it is reserved for the existence check. But you can put "?" after "\\" to a parent key to use it as a first-character wildcard:
 ```yaml
@@ -58,6 +59,12 @@ These special keys must be defined at the root level of your YAML configuration.
   "?cache": # will check if the exact directory "cache" exists, and skip if it doesn't
   ".\\?cache": # will actually search for directories matching "?cache" pattern (any 1 first char, followed by "cache") and process them
 ```
+- Globs only process existing full-path matches. If you want to create the same child path under every matched parent, put the wildcard on the parent key and nest the child path beneath it, for example:
+```yaml
+"Storage\\ext\\*":
+  "def\\Application Cache":
+```
 - **`:defs`:** Purely a repository block for YAML anchors (`&my_cache`). The application silently skips processing this.
+- **Unknown `:` directives:** Keys beginning with `:` are treated as directives. Unknown directives are ignored and logged with a warning instead of being interpreted as filesystem paths.
 
 See [ramdisk-config.yaml](ramdisk-config.yaml) for example.

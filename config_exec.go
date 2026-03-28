@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/windows"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,32 +76,82 @@ func processEnvBlock(envNode *yaml.Node) error {
 
 func setupLog(logPath string) {
 	if logPath == "" {
-		return
-	}
-	exp, err := expandEnv(logPath)
-	if err != nil {
-		log.Printf("Warning: failed to expand log path '%s': %v", logPath, err)
-		return
-	}
-	if !filepath.IsAbs(exp) {
-		if configDir != "" {
-			exp = filepath.Join(configDir, exp)
+		logPath, ok := getEnv("LOG")
+		if !ok || logPath == "" {
+			return
 		}
+	} else {
+		exp, err := expandEnv(logPath)
+		if err != nil {
+			log.Printf("Warning: failed to expand log path '%s': %v", logPath, err)
+			return
+		}
+		logPath = exp
 	}
+
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(configDir, logPath)
+	}
+
+	setEnv("LOG", logPath)
+	os.Setenv("LOG", logPath)
 
 	// Create directory for the log file if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(exp), os.ModePerm); err != nil {
-		log.Printf("Warning: failed to create log directory '%s': %v", filepath.Dir(exp), err)
+	if err := os.MkdirAll(filepath.Dir(logPath), os.ModePerm); err != nil {
+		log.Printf("Warning: failed to create log directory '%s': %v", filepath.Dir(logPath), err)
 	}
 
-	f, err := os.OpenFile(exp, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
-		log.Printf("Warning: failed to open log file '%s': %v", exp, err)
+		log.Printf("Warning: failed to open log file '%s': %v", logPath, err)
 		return
 	}
 
-	mw := io.MultiWriter(os.Stdout, f)
+	mw := io.MultiWriter(os.Stderr, f)
 	log.SetOutput(mw)
+}
+
+func runLoggedCommand(name string, args []string, workingDir string, display string) error {
+	if display == "" {
+		display = windows.ComposeCommandLine(append([]string{name}, args...))
+	}
+
+	log.Printf("Executing: %s", display)
+
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = log.Writer()
+	cmd.Stderr = log.Writer()
+	cmd.Env = os.Environ()
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
+
+	err := cmd.Run()
+	if err == nil {
+		log.Printf("Command '%s' exited with code 0", display)
+		return nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		log.Printf("Command '%s' exited with code %d", display, exitErr.ExitCode())
+		return err
+	}
+
+	log.Printf("Command '%s' failed before returning an exit code: %v", display, err)
+	return err
+}
+
+func runCommandLine(commandLine string, workingDir string) error {
+	args, err := windows.DecomposeCommandLine(commandLine)
+	if err != nil {
+		return fmt.Errorf("parse command line %q: %w", commandLine, err)
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("empty command line")
+	}
+
+	return runLoggedCommand(args[0], args[1:], workingDir, commandLine)
 }
 
 func runShellCommands(node *yaml.Node) {
@@ -113,16 +166,8 @@ func runShellCommands(node *yaml.Node) {
 			continue
 		}
 
-		log.Printf("Executing: %s", cmdStr)
-
-		cmd := exec.Command("cmd", "/C", cmdStr)
-		cmd.Stdout = log.Writer()
-		cmd.Stderr = log.Writer()
-
-		if err := cmd.Run(); err != nil {
+		if err := runCommandLine(cmdStr, ""); err != nil {
 			log.Printf("Command '%s' failed: %v", cmdStr, err)
-		} else {
-			log.Printf("Command '%s' completed successfully", cmdStr)
 		}
 	}
 }

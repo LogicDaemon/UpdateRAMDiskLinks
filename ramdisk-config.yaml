@@ -16,6 +16,20 @@
 # * an existing file, touch the target (on RAM drive or specified by ">"), then rename source, and create file symlink at the source path pointing to the RAM drive
 # * if does not exist, touch the target (on RAM drive or specified by ">"), and create file symlink at the source path pointing to the RAM drive
 
+":exec_pre":
+  - ATTRIB +I "%RAMDrive%\*.*" /S /D /L
+# ":exec_post":
+#   - COMPACT /C "%Log%" /Q
+":env":
+  # Env vars starting with "?" are only set if they are not yet defined or empty
+  # Note that the order of items in the env section is not guaranteed,
+  # so the program must resolve them recursively
+  # but once resolved, the result should be saved to customEnv
+  "?APPDATA": "%USERPROFILE%\\AppData\\Roaming"
+  "?LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
+  "?USERPROFILE": "d:\\Users\\LogicDaemon"
+":log": "%RAMDrive%\\RAMDiskLinker.log"  # if relative, base is configDir
+
 ":mkdir":
   "Temp":
     "cache":
@@ -162,12 +176,16 @@
 
 # Local caches (%LOCALAPPDATA%) grouped to reduce repetition
 "%LOCALAPPDATA%":
+  "cache":
+  "?uv\\cache":
   "Scripts\\software_update\\Downloader\\.mypy_cache":
     ">": "%RAMDrive%\\Temp\\.mypy_cache"
   "?CrashDumps":
   "?NuGet":
   "?Google\\YAPF":
     "Cache":
+  "?gopls":
+  "?go-build":
   "?goimports":
   "Microsoft":
     "?Edge":

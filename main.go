@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -26,21 +24,17 @@ const (
 )
 
 var (
-	runTime        = time.Now()
-	dateStr        = runTime.Format("20060102")
-	timeStr        = runTime.Format("150405.00")
+	datetimeStr    = time.Now().Format("20060102_150405.00")
 	ramDrive       string
 	timeoutSeconds float64 = -1 // unlimited by default
 	configDir      string
-
-	customEnv   = make(map[string]string)
-	customEnvMu sync.RWMutex
-
-	aclJobs = make(chan aclJob, 100)
-	aclDone = make(chan struct{})
-
-	linesCacheMu sync.RWMutex
-	linesCache   = make(map[string]cachedLines)
+	customEnv      = make(map[string]string)
+	customEnvMu    sync.RWMutex
+	linesCache     = make(map[string]cachedLines)
+	linesCacheMu   sync.RWMutex
+	aclJobs        = make(chan aclJob, 100)
+	aclJobsWg      sync.WaitGroup
+	aclDone        = make(chan struct{})
 )
 
 type aclJob struct {
@@ -52,34 +46,38 @@ type cachedLines struct {
 	err   error
 }
 
+func ramDriveRoot() string {
+	if ramDrive == "" {
+		return ""
+	}
+	if strings.HasSuffix(ramDrive, `\`) || strings.HasSuffix(ramDrive, "/") {
+		return ramDrive
+	}
+	return ramDrive + string(filepath.Separator)
+}
+
 func aclWorker() {
 	defer close(aclDone)
 
-	ramTemp := filepath.Join(ramDrive, "Temp")
+	ramTemp := filepath.Join(ramDriveRoot(), "Temp")
 	os.MkdirAll(ramTemp, os.ModePerm)
 	tmpACL := filepath.Join(ramTemp, fmt.Sprintf("acl_%d.tmp", time.Now().UnixNano()))
 
 	for job := range aclJobs {
-		// Run icacls . /save tmpACL in src directory
-		cmdSave := exec.Command("icacls", ".", "/save", tmpACL)
-		cmdSave.Dir = job.src
-		cmdSave.Stdout = log.Writer()
-		cmdSave.Stderr = log.Writer()
-		if err := cmdSave.Run(); err != nil {
-			log.Printf("Failed to save ACL for %s: %v", job.src, err)
-			continue
-		}
+		func() {
+			defer aclJobsWg.Done()
 
-		// Run icacls . /restore tmpACL in dest directory
-		cmdRestore := exec.Command("icacls", ".", "/restore", tmpACL)
-		cmdRestore.Dir = job.dest
-		cmdRestore.Stdout = log.Writer()
-		cmdRestore.Stderr = log.Writer()
-		if err := cmdRestore.Run(); err != nil {
-			log.Printf("Failed to restore ACL for %s: %v", job.dest, err)
-		}
+			if err := runLoggedCommand("icacls", []string{".", "/save", tmpACL}, job.src, ""); err != nil {
+				log.Printf("Failed to save ACL for %s: %v", job.src, err)
+				return
+			}
 
-		os.Remove(tmpACL)
+			if err := runLoggedCommand("icacls", []string{".", "/restore", tmpACL}, job.dest, ""); err != nil {
+				log.Printf("Failed to restore ACL for %s: %v", job.dest, err)
+			}
+
+			os.Remove(tmpACL)
+		}()
 	}
 }
 
@@ -301,7 +299,7 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 		} else if basePath != "" {
 			fullPath = filepath.Join(basePath, dirPath)
 		} else {
-			fullPath = filepath.Join(ramDrive, dirPath)
+			fullPath = filepath.Join(ramDriveRoot(), dirPath)
 			log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
 		}
 		createDirectory(fullPath, "")
@@ -326,7 +324,7 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 			} else if basePath != "" {
 				fullPath = filepath.Join(basePath, dirPath)
 			} else {
-				fullPath = filepath.Join(ramDrive, dirPath)
+				fullPath = filepath.Join(ramDriveRoot(), dirPath)
 				log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
 			}
 
@@ -358,8 +356,12 @@ func processNode(basePath string, node *yaml.Node) {
 				continue
 			case ":mkdir":
 				mkDirs(valNode, basePath)
+				continue
 			case ":log", ":env", ":exec_pre", ":exec_post":
 				// Handled at root level beforehand
+				continue
+			default:
+				log.Printf("Warning: unknown directive '%s' at '%s'\n", key, basePath)
 				continue
 			}
 		}
@@ -433,23 +435,15 @@ func readLinesMemoized(path string) ([]string, error) {
 	return lines, err
 }
 
+func hasGlobMeta(path string) bool {
+	return strings.ContainsAny(path, "*?[")
+}
+
 func processPath(basePath, key string, valNode *yaml.Node) {
 	checkExists := false
 	if strings.HasPrefix(key, "?") {
 		checkExists = true
 		key = key[1:]
-	}
-
-	if key == "." {
-		// Just a check for existence of the current basePath
-		if checkExists && !pathExists(basePath) {
-			return
-		}
-		// If valNode has children, process them against basePath
-		if valNode.Kind == yaml.MappingNode {
-			processNode(basePath, valNode)
-		}
-		return
 	}
 
 	var err error
@@ -472,19 +466,24 @@ func processPath(basePath, key string, valNode *yaml.Node) {
 	// Globbing
 	if strings.ContainsAny(fullPath, "*?") {
 		matches, err := filepath.Glob(fullPath)
-		if err == nil && len(matches) > 0 {
+		if err != nil {
+			log.Printf("Skipping glob path '%s': %v\n", fullPath, err)
+			return
+		}
+		if len(matches) > 0 {
 			for _, match := range matches {
 				processResolvedPath(match, checkExists, valNode)
 			}
 			return
 		}
+		return
 	}
 
 	processResolvedPath(fullPath, checkExists, valNode)
 }
 
 func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) {
-	if checkExists && !pathExists(fullPath) {
+	if checkExists && !pathEntryExists(fullPath) {
 		return
 	}
 
@@ -503,7 +502,7 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 			if len(valNode.Content) == 0 {
 				linkToRAMDisk(fullPath)
 			} else {
-				if !path.IsAbs(fullPath) {
+				if !filepath.IsAbs(fullPath) {
 					log.Printf("ERROR: processResolvedPath got a relative input directory '%s'", fullPath)
 					return
 				}
@@ -526,9 +525,7 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 		} else if len(valNode.Alias.Content) == 0 {
 			linkToRAMDisk(fullPath)
 		}
-	} else if valNode.Value == "" && valNode.Kind == 0 {
-		linkToRAMDisk(fullPath)
-	} else if len(valNode.Content) == 0 {
+	} else if valNode.Value == "" && valNode.Kind == 0 || len(valNode.Content) == 0 {
 		linkToRAMDisk(fullPath)
 	}
 }
@@ -594,6 +591,59 @@ func handleOverride(fullPath string, targetNode *yaml.Node) {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
+}
+
+func pathEntryExists(path string) bool {
+	_, err := os.Lstat(path)
+	return !os.IsNotExist(err)
+}
+
+func normalizeWindowsPathPrefix(path string) string {
+	switch {
+	case strings.HasPrefix(path, `\\?\UNC\`):
+		return `\\` + strings.TrimPrefix(path, `\\?\UNC\`)
+	case strings.HasPrefix(path, `\\?\`):
+		return strings.TrimPrefix(path, `\\?\`)
+	case strings.HasPrefix(path, `\??\UNC\`):
+		return `\\` + strings.TrimPrefix(path, `\??\UNC\`)
+	case strings.HasPrefix(path, `\??\`):
+		return strings.TrimPrefix(path, `\??\`)
+	default:
+		return path
+	}
+}
+
+func normalizeLinkTargetPath(source, target string) (string, error) {
+	target = normalizeWindowsPathPrefix(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(source), target)
+	}
+
+	absoluteTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+
+	return normalizeWindowsPathPrefix(filepath.Clean(absoluteTarget)), nil
+}
+
+func linkPointsToTarget(source, target string) (bool, error) {
+	currentTarget, err := os.Readlink(source)
+	if err != nil {
+		return false, err
+	}
+
+	normalizedCurrentTarget, err := normalizeLinkTargetPath(source, currentTarget)
+	if err != nil {
+		return false, err
+	}
+
+	normalizedExpectedTarget, err := normalizeLinkTargetPath(source, target)
+	if err != nil {
+		return false, err
+	}
+
+	return strings.EqualFold(normalizedCurrentTarget, normalizedExpectedTarget), nil
 }
 
 func getRAMTarget(source string) string {
@@ -662,6 +712,7 @@ func mkdirWithACL(srcDir, dstDir string) error {
 		aclSrc := pair.src
 
 		if srcInfo, err := os.Stat(aclSrc); err == nil && srcInfo.IsDir() {
+			aclJobsWg.Add(1)
 			aclJobs <- aclJob{src: aclSrc, dest: pair.dst}
 		}
 	}
@@ -674,11 +725,13 @@ func makeLink(source, target string) {
 
 	var isFile bool
 	sourceExists := true
+	sourceIsLink := false
 	info, err := os.Lstat(source)
 
 	if err == nil {
 		linkType, tErr := win32linktypes.GetType(source)
 		if tErr == nil && linkType != win32linktypes.TypeNormal {
+			sourceIsLink = true
 			if linkType == win32linktypes.TypeFileSymlink {
 				isFile = true
 			} else {
@@ -713,10 +766,19 @@ func makeLink(source, target string) {
 		}
 	}
 
+	if sourceExists && sourceIsLink {
+		pointsToTarget, err := linkPointsToTarget(source, target)
+		if err != nil {
+			log.Printf("Failed to inspect existing link target for %s: %v\n", source, err)
+		} else if pointsToTarget {
+			log.Printf("Skipping update for %s; already points to %s\n", source, target)
+			return
+		}
+	}
+
 	// 2. remove/rename source
 	if sourceExists {
-		linkType, tErr := win32linktypes.GetType(source)
-		if tErr == nil && linkType != win32linktypes.TypeNormal {
+		if sourceIsLink {
 			os.Remove(source)
 		} else {
 			removed := false
@@ -735,7 +797,7 @@ func makeLink(source, target string) {
 			}
 
 			if !removed {
-				renameTo := source + ".LINKED_" + dateStr + "_" + timeStr
+				renameTo := source + ".LINKED_" + datetimeStr
 				if err := os.Rename(source, renameTo); err != nil {
 					log.Printf("Failed to rename %s to %s: %v\n", source, renameTo, err)
 					return
@@ -813,11 +875,15 @@ func main() {
 			processEnvBlock(doc.Content[i+1])
 		}
 	}
+
+	var logPath string
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":log" {
-			setupLog(doc.Content[i+1].Value)
+			logPath = doc.Content[i+1].Value
 		}
 	}
+	setupLog(logPath)
+
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":exec_pre" {
 			runShellCommands(doc.Content[i+1])
@@ -825,6 +891,7 @@ func main() {
 	}
 
 	processNode("", doc)
+	aclJobsWg.Wait()
 
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":exec_post" {
