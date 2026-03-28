@@ -63,6 +63,8 @@ func aclWorker() {
 		// Run icacls . /save tmpACL in src directory
 		cmdSave := exec.Command("icacls", ".", "/save", tmpACL)
 		cmdSave.Dir = job.src
+		cmdSave.Stdout = log.Writer()
+		cmdSave.Stderr = log.Writer()
 		if err := cmdSave.Run(); err != nil {
 			log.Printf("Failed to save ACL for %s: %v", job.src, err)
 			continue
@@ -71,6 +73,8 @@ func aclWorker() {
 		// Run icacls . /restore tmpACL in dest directory
 		cmdRestore := exec.Command("icacls", ".", "/restore", tmpACL)
 		cmdRestore.Dir = job.dest
+		cmdRestore.Stdout = log.Writer()
+		cmdRestore.Stderr = log.Writer()
 		if err := cmdRestore.Run(); err != nil {
 			log.Printf("Failed to restore ACL for %s: %v", job.dest, err)
 		}
@@ -337,6 +341,7 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 
 func processNode(basePath string, node *yaml.Node) {
 	if node.Kind != yaml.MappingNode {
+		log.Printf("Expected mapping node at '%s', got %v\n", basePath, node.Kind)
 		return
 	}
 
@@ -353,6 +358,9 @@ func processNode(basePath string, node *yaml.Node) {
 				continue
 			case ":mkdir":
 				mkDirs(valNode, basePath)
+			case ":log", ":env", ":exec_pre", ":exec_post":
+				// Handled at root level beforehand
+				continue
 			}
 		}
 
@@ -795,5 +803,32 @@ func main() {
 	if len(root.Content) == 0 {
 		return
 	}
-	processNode("", root.Content[0])
+
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		log.Fatalf("Expected root mapping node, got %v\n", doc.Kind)
+	}
+	for i := 0; i < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == ":env" {
+			processEnvBlock(doc.Content[i+1])
+		}
+	}
+	for i := 0; i < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == ":log" {
+			setupLog(doc.Content[i+1].Value)
+		}
+	}
+	for i := 0; i < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == ":exec_pre" {
+			runShellCommands(doc.Content[i+1])
+		}
+	}
+
+	processNode("", doc)
+
+	for i := 0; i < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == ":exec_post" {
+			runShellCommands(doc.Content[i+1])
+		}
+	}
 }

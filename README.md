@@ -40,6 +40,14 @@ The `:mkdir` directive instructs the utility to purely create empty directories.
 The `<` prefix reads lines from a text file and dynamically injects them as keys. 
 - If the provided filename is relative, it resolves against the directory where the configuration file was loaded from (`configDir`), completely ignoring the source path currently in context.
 
+## Root Directives
+
+These special keys must be defined at the root level of your YAML configuration.
+
+- **`:env`:** Define dynamic environment variables to use in path resolutions. Supports recursive expansion. If a key starts with `?` (e.g. `"?APPDATA"`), the variable is only set if it's currently undefined or empty in the OS environment.
+- **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with your console to a specified file. If the path is relative, it resolves against the configuration directory (`configDir`).
+- **`:exec_pre` / `:exec_post`:** Arrays of shell commands (executed via `cmd.exe /c`) to run *before* or *after* the directory processing phase. All standard output and errors are captured to the log. Environment variables specified or expanded in `:env` are applied prior to execution.
+
 ## Semantics Glossary
 
 - **Empty value:** If the source exists and isn't already a link, the tool will construct the RAM disk target, rename the source (appending a suffix with a date-time stamp), and create a junction/symlink to the RAM structure.
