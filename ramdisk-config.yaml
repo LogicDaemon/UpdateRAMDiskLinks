@@ -243,7 +243,7 @@
   "?Programs\\Tor Browser":
     "Browser\\TorBrowser\\Data\\Browser":
         "Caches":
-        "?profile.*\\storage":
+        "profile.*\\storage":
 
   "?Programs\\jdownloader":
     "logs":
@@ -268,11 +268,9 @@
     "Saved\\Logs":
 
   "?nomic.ai\\GPT4All":
-    "?.":
 
   # Firefox profiles under LocalAppData
   "Mozilla\\Firefox\\Profiles\\*":
-    "?.":
 
   # Chrome-based apps: per-app User Data handling
   "Google\\Chrome": *chrome_user_data

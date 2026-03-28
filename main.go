@@ -446,7 +446,7 @@ func processPath(basePath, key string, valNode *yaml.Node) {
 	}
 
 	// Globbing
-	if strings.Contains(fullPath, "*") {
+	if strings.ContainsAny(fullPath, "*?") {
 		matches, err := filepath.Glob(fullPath)
 		if err == nil && len(matches) > 0 {
 			for _, match := range matches {
@@ -503,13 +503,31 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 
 func handleOverride(fullPath string, targetNode *yaml.Node) {
 	var target string
+
+	trySetTargetFromGlob := func(t string) bool {
+		matches, err := filepath.Glob(t)
+		if err == nil && len(matches) > 0 {
+			for _, match := range matches {
+				if pathExists(match) {
+					target = match
+					return true
+				}
+			}
+		}
+		return false
+	}
+
 	if targetNode.Kind == yaml.ScalarNode {
 		t, err := expandEnv(targetNode.Value)
 		if err != nil {
 			log.Printf("Skipping override '%s' for '%s': %v\n", targetNode.Value, fullPath, err)
 			return
 		}
-		target = t
+		if strings.ContainsAny(t, "*?") {
+			trySetTargetFromGlob(t)
+		} else {
+			target = t
+		}
 	} else if targetNode.Kind == yaml.SequenceNode {
 		for _, n := range targetNode.Content {
 			t, err := expandEnv(n.Value)
@@ -517,7 +535,11 @@ func handleOverride(fullPath string, targetNode *yaml.Node) {
 				log.Printf("Skipping override option '%s' for '%s': %v\n", n.Value, fullPath, err)
 				continue
 			}
-			if pathExists(t) {
+			if strings.ContainsAny(t, "*?") {
+				if trySetTargetFromGlob(t) {
+					break
+				}
+			} else if pathExists(t) {
 				target = t
 				break
 			}
