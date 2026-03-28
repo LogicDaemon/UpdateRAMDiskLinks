@@ -1,3 +1,5 @@
+//go:build ignore
+
 package main
 
 import (
@@ -9,7 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func main_test() {
+func main() {
 	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
 	procGetLogicalDriveStringsW := kernel32.NewProc("GetLogicalDriveStringsW")
 	procQueryDosDeviceW := kernel32.NewProc("QueryDosDeviceW")

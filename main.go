@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -149,18 +150,22 @@ func findRAMDrive() (string, error) {
 		}
 	}
 
+	// Heuristic: if there's exactly one DRIVE_RAMDISK, use it
 	if len(ramDiskDrives) == 1 {
 		return strings.TrimRight(ramDiskDrives[0], "\\"), nil
 	}
 
+	// Otherwise if there's exactly one labeled "RamDisk", use it
 	if len(ramDiskLabels) == 1 {
 		return strings.TrimRight(ramDiskLabels[0], "\\"), nil
 	}
 
+	// Otherwise if there's any ImDisk devices, use the first one
 	if len(imDiskDrives) > 0 {
 		return strings.TrimRight(imDiskDrives[0], "\\"), nil
 	}
 
+	// Otherwise fail
 	return "", fmt.Errorf("could not unambiguously find RAM drive (found %d DRIVE_RAMDISK, %d labeled 'RamDisk', %d ImDisk devices)", len(ramDiskDrives), len(ramDiskLabels), len(imDiskDrives))
 }
 
@@ -286,7 +291,16 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 			log.Printf("Skipping mkdir for '%s': %v\n", valNode.Value, err)
 			return
 		}
-		createDirectory(dirPath, basePath)
+		var fullPath string
+		if filepath.IsAbs(dirPath) {
+			fullPath = dirPath
+		} else if basePath != "" {
+			fullPath = filepath.Join(basePath, dirPath)
+		} else {
+			fullPath = filepath.Join(ramDrive, dirPath)
+			log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
+		}
+		createDirectory(fullPath, "")
 	} else if valNode.Kind == yaml.SequenceNode {
 		for _, n := range valNode.Content {
 			mkDirs(n, basePath)
@@ -308,7 +322,8 @@ func mkDirs(valNode *yaml.Node, basePath string) {
 			} else if basePath != "" {
 				fullPath = filepath.Join(basePath, dirPath)
 			} else {
-				fullPath = dirPath
+				fullPath = filepath.Join(ramDrive, dirPath)
+				log.Printf("Warning: Root mkdir path '%s' is relative. Resolved against RAM Drive to '%s'\n", dirPath, fullPath)
 			}
 
 			createDirectory(fullPath, "")
@@ -442,7 +457,8 @@ func processPath(basePath, key string, valNode *yaml.Node) {
 	} else if basePath != "" {
 		fullPath = filepath.Join(basePath, key)
 	} else {
-		fullPath = key
+		fullPath = filepath.Join(configDir, key)
+		log.Printf("Warning: Root path '%s' is relative. Resolved against configuration directory to '%s'\n", key, fullPath)
 	}
 
 	// Globbing
@@ -479,6 +495,14 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 			if len(valNode.Content) == 0 {
 				linkToRAMDisk(fullPath)
 			} else {
+				if !path.IsAbs(fullPath) {
+					log.Printf("ERROR: processResolvedPath got a relative input directory '%s'", fullPath)
+					return
+				}
+				ramTarget := getRAMTarget(fullPath)
+				if err := mkdirWithACL(fullPath, ramTarget); err != nil {
+					log.Printf("Failed to create intermediate target directory %s: %v\n", ramTarget, err)
+				}
 				processNode(fullPath, valNode)
 			}
 		}
@@ -501,21 +525,20 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 	}
 }
 
-func handleOverride(fullPath string, targetNode *yaml.Node) {
-	var target string
-
-	trySetTargetFromGlob := func(t string) bool {
-		matches, err := filepath.Glob(t)
-		if err == nil && len(matches) > 0 {
-			for _, match := range matches {
-				if pathExists(match) {
-					target = match
-					return true
-				}
+func tryGetTargetFromGlob(t string) (string, bool) {
+	matches, err := filepath.Glob(t)
+	if err == nil && len(matches) > 0 {
+		for _, match := range matches {
+			if pathExists(match) {
+				return match, true
 			}
 		}
-		return false
 	}
+	return "", false
+}
+
+func handleOverride(fullPath string, targetNode *yaml.Node) {
+	var target string
 
 	if targetNode.Kind == yaml.ScalarNode {
 		t, err := expandEnv(targetNode.Value)
@@ -523,8 +546,13 @@ func handleOverride(fullPath string, targetNode *yaml.Node) {
 			log.Printf("Skipping override '%s' for '%s': %v\n", targetNode.Value, fullPath, err)
 			return
 		}
+		if !filepath.IsAbs(t) {
+			t = filepath.Join(getRAMTarget(filepath.Dir(fullPath)), t)
+		}
 		if strings.ContainsAny(t, "*?") {
-			trySetTargetFromGlob(t)
+			if match, found := tryGetTargetFromGlob(t); found {
+				target = match
+			}
 		} else {
 			target = t
 		}
@@ -535,8 +563,12 @@ func handleOverride(fullPath string, targetNode *yaml.Node) {
 				log.Printf("Skipping override option '%s' for '%s': %v\n", n.Value, fullPath, err)
 				continue
 			}
+			if !filepath.IsAbs(t) {
+				t = filepath.Join(getRAMTarget(filepath.Dir(fullPath)), t)
+			}
 			if strings.ContainsAny(t, "*?") {
-				if trySetTargetFromGlob(t) {
+				if match, found := tryGetTargetFromGlob(t); found {
+					target = match
 					break
 				}
 			} else if pathExists(t) {
@@ -556,9 +588,10 @@ func pathExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
-func linkToRAMDisk(source string) {
+func getRAMTarget(source string) string {
 	if !filepath.IsAbs(source) {
-		return
+		log.Printf("ERROR: getRAMTarget got a relative input path '%s'", source)
+		return ""
 	}
 
 	drivePrefix := filepath.VolumeName(source)
@@ -572,8 +605,11 @@ func linkToRAMDisk(source string) {
 		ramDriveClean += string(filepath.Separator)
 	}
 
-	ramTarget := filepath.Join(ramDriveClean, relPath)
-	makeLink(source, ramTarget)
+	return filepath.Join(ramDriveClean, relPath)
+}
+
+func linkToRAMDisk(source string) {
+	makeLink(source, getRAMTarget(source))
 }
 
 func mkdirWithACL(srcDir, dstDir string) error {
@@ -631,7 +667,7 @@ func makeLink(source, target string) {
 	var isFile bool
 	sourceExists := true
 	info, err := os.Lstat(source)
-	
+
 	if err == nil {
 		linkType, tErr := win32linktypes.GetType(source)
 		if tErr == nil && linkType != win32linktypes.TypeNormal {
@@ -737,9 +773,13 @@ func main() {
 		log.Fatalf("Usage: %s <config.yaml>\nConfig file example:\n%s", os.Args[0], example_config)
 	}
 	configPath := os.Args[1]
-	configDir = filepath.Dir(configPath)
-	if configDir == "." {
-		configDir = ""
+	if absPath, err := filepath.Abs(configPath); err == nil {
+		configDir = filepath.Dir(absPath)
+	} else {
+		configDir = filepath.Dir(configPath)
+		if configDir == "." {
+			configDir, _ = os.Getwd()
+		}
 	}
 
 	b, err := os.ReadFile(configPath)
