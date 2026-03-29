@@ -6,6 +6,8 @@
 #   2. rename source to source+".LINKED_{datetime}"
 #   3. create junction at the source path pointing to the RAM target
 # - "?prefix": only process if the source exists (skip unused apps)
+# - Literal ":skip": reserve this exact path and do nothing (useful to exclude it from same-level globs)
+# - At each mapping level, non-glob keys are claimed before glob keys are expanded; sibling globs skip exact paths already claimed at that same level
 # - "<file": inline that file’s lines as keys at the current level (used for reusable lists like Chrome caches)
 # - ">": override destination target (if value is a string, link to it; if list, link to the first existing path)
 # - ":mkdir": create the empty subdirs
@@ -203,7 +205,7 @@
   "?ollama app.exe\\EBWebView":
   "Microsoft":
     "?Edge":
-    "?Internet Explorer":
+    #"?Internet Explorer":
     "?Media Player":
     "?Olk":
       "cache":
@@ -221,7 +223,8 @@
       "Notifications":
       # Do not uncomment, breaks hh.exe
       # "WebCache":
-      "SharedWebView\\EBWebView":
+      # Breaks Start Menu search probably
+      # "SharedWebView\\EBWebView":
 
   "?AMD":
     "DxCache":
@@ -331,14 +334,29 @@
   "?Microsoft\\Olk\\EBWebView": *chrome_user_data
 
   # Windows AppX caches
-  "Packages\\*":
-    "AC":
-      "INetCache":
-      "INetHistory":
-      "Temp":
-    "LocalState":
-      "Cache":
-      "LiveTile":
-      "?UDF\\EBWebView":
-      "?EBWebView":
-    "TempState":
+  "Packages":
+    # ToDo: exclude some directories
+    # because moving those seems to break Start Menu search
+    # Packages\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\LocalState\EBWebView
+    # Packages\MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy\LocalState\EBWebView
+    "MicrosoftWindows.Client.CBS_cw5n1h2txyewy": &packages_keep_web_view
+      "AC":
+        "INetCache":
+        "INetHistory":
+        "Temp":
+      "LocalState":
+        "Cache":
+        "LiveTile":
+      "TempState":
+    "MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy": *packages_keep_web_view
+    "*":
+      "AC":
+        "INetCache":
+        "INetHistory":
+        "Temp":
+      "LocalState":
+        "Cache":
+        "LiveTile":
+        "?UDF\\EBWebView":
+        "?EBWebView":
+      "TempState":

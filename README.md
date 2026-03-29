@@ -68,6 +68,13 @@ These special keys must be defined at the root level of your YAML configuration.
 "Storage\\ext\\*":
   "def\\Application Cache":
 ```
+- At each YAML mapping level, non-glob keys are claimed first and glob keys run afterward. A glob therefore skips any exact sibling path already claimed at that same level, even if the glob appears earlier in the file.
+- **`":skip"` value:** Reserves a path and performs no link or mkdir action for that key. This is mainly useful for carving an exact path out of a same-level glob, for example:
+```yaml
+"LocalState":
+  "*":
+  "EBWebView": ":skip"
+```
 - **`:defs`:** Purely a repository block for YAML anchors (`&my_cache`). The application silently skips processing this.
 - **Unknown `:` directives:** Keys beginning with `:` are treated as directives. Unknown directives are ignored and logged with a warning instead of being interpreted as filesystem paths.
 

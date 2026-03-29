@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"github.com/LogicDaemon/win32linktypes"
 	junction "github.com/nyaosorg/go-windows-junction"
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +31,25 @@ func parseRootDirectiveNode(t *testing.T, yamlText, key string) *yaml.Node {
 
 	t.Fatalf("directive %q not found in YAML", key)
 	return nil
+}
+
+func parseMappingNode(t *testing.T, yamlText string) *yaml.Node {
+	t.Helper()
+
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(yamlText), &root); err != nil {
+		t.Fatalf("unmarshal YAML mapping: %v", err)
+	}
+	if len(root.Content) == 0 {
+		t.Fatal("parsed YAML mapping is empty")
+	}
+
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		t.Fatalf("parsed YAML node kind = %v, want mapping", doc.Kind)
+	}
+
+	return doc
 }
 
 func drainACLJobsForTest() {
@@ -332,6 +353,157 @@ func TestMkDirsAbsolutePathsStayAbsolute(t *testing.T) {
 	mirroredPath := filepath.Join(getRAMTarget(sourceBase), "logs")
 	if pathExists(mirroredPath) {
 		t.Fatalf("absolute :mkdir path unexpectedly created mirrored path %q", mirroredPath)
+	}
+}
+
+func TestResolveConfigPathsExcludesClaimedSameLevelMatches(t *testing.T) {
+	baseDir := t.TempDir()
+	explicitPath := filepath.Join(baseDir, "asdasf", "vcxvxc")
+	anotherPath := filepath.Join(baseDir, "other", "child")
+
+	for _, dir := range []string{explicitPath, anotherPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create directory %q: %v", dir, err)
+		}
+	}
+
+	excluded := make(claimedPathSet)
+	excluded.add(explicitPath)
+
+	got, err := resolveConfigPaths(baseDir, `*\*`, excluded)
+	if err != nil {
+		t.Fatalf("resolveConfigPaths returned error: %v", err)
+	}
+
+	assertSamePaths(t, got, []string{anotherPath})
+}
+
+func TestResolveConfigPathsKeepsDifferentLevelMatches(t *testing.T) {
+	baseDir := t.TempDir()
+	parentPath := filepath.Join(baseDir, "asdasf")
+	childPath := filepath.Join(parentPath, "vcxvxc")
+	otherPath := filepath.Join(baseDir, "other")
+
+	for _, dir := range []string{childPath, otherPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create directory %q: %v", dir, err)
+		}
+	}
+
+	excluded := make(claimedPathSet)
+	excluded.add(childPath)
+
+	got, err := resolveConfigPaths(baseDir, `*`, excluded)
+	if err != nil {
+		t.Fatalf("resolveConfigPaths returned error: %v", err)
+	}
+
+	assertSamePaths(t, got, []string{parentPath, otherPath})
+}
+
+func TestResolveConfigPathsOptionalMissingReturnsEmpty(t *testing.T) {
+	baseDir := t.TempDir()
+
+	got, err := resolveConfigPaths(baseDir, `?missing`, nil)
+	if err != nil {
+		t.Fatalf("resolveConfigPaths returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("resolveConfigPaths returned %v, want empty result for missing optional path", got)
+	}
+}
+
+func TestResolveConfigPathsClaimsExactPath(t *testing.T) {
+	baseDir := t.TempDir()
+	explicitPath := filepath.Join(baseDir, "asdasf", "vcxvxc")
+	if err := os.MkdirAll(explicitPath, 0o755); err != nil {
+		t.Fatalf("create directory %q: %v", explicitPath, err)
+	}
+
+	excluded := make(claimedPathSet)
+	got, err := resolveConfigPaths(baseDir, `asdasf\vcxvxc`, excluded)
+	if err != nil {
+		t.Fatalf("resolveConfigPaths returned error: %v", err)
+	}
+
+	assertSamePaths(t, got, []string{explicitPath})
+	if !excluded.has(explicitPath) {
+		t.Fatalf("resolveConfigPaths did not claim explicit path %q", explicitPath)
+	}
+}
+
+func TestResolveConfigPathsDoesNotClaimGlobMatches(t *testing.T) {
+	baseDir := t.TempDir()
+	matchPath := filepath.Join(baseDir, "asdasf", "vcxvxc")
+	if err := os.MkdirAll(matchPath, 0o755); err != nil {
+		t.Fatalf("create directory %q: %v", matchPath, err)
+	}
+
+	excluded := make(claimedPathSet)
+	got, err := resolveConfigPaths(baseDir, `*\*`, excluded)
+	if err != nil {
+		t.Fatalf("resolveConfigPaths returned error: %v", err)
+	}
+
+	assertSamePaths(t, got, []string{matchPath})
+	if excluded.has(matchPath) {
+		t.Fatalf("resolveConfigPaths unexpectedly claimed glob match %q", matchPath)
+	}
+}
+
+func TestProcessNodeGlobBeforeExplicitSkipExcludesReservedPath(t *testing.T) {
+	defer drainACLJobsForTest()
+	aclJobsWg = sync.WaitGroup{}
+
+	baseDir := t.TempDir()
+	previousRAMDrive := ramDrive
+	ramDrive = filepath.Join(baseDir, "ram")
+	t.Cleanup(func() {
+		ramDrive = previousRAMDrive
+		drainACLJobsForTest()
+	})
+
+	localState := filepath.Join(baseDir, "source", "LocalState")
+	cacheDir := filepath.Join(localState, "Cache")
+	ebWebViewDir := filepath.Join(localState, "EBWebView")
+
+	for _, dir := range []string{cacheDir, ebWebViewDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create source directory %q: %v", dir, err)
+		}
+	}
+
+	node := parseMappingNode(t, `
+"*":
+"EBWebView": ":skip"
+`)
+
+	processNode(localState, node)
+
+	cacheType, err := win32linktypes.GetType(cacheDir)
+	if err != nil {
+		t.Fatalf("GetType(%q): %v", cacheDir, err)
+	}
+	if cacheType == win32linktypes.TypeNormal {
+		t.Fatalf("Cache directory %q was not converted into a link", cacheDir)
+	}
+
+	ebWebViewType, err := win32linktypes.GetType(ebWebViewDir)
+	if err != nil {
+		t.Fatalf("GetType(%q): %v", ebWebViewDir, err)
+	}
+	if ebWebViewType != win32linktypes.TypeNormal {
+		t.Fatalf("EBWebView directory %q should remain unchanged when reserved with :skip", ebWebViewDir)
+	}
+
+	ramCacheDir := getRAMTarget(cacheDir)
+	if !pathExists(ramCacheDir) {
+		t.Fatalf("expected RAM target %q to be created for Cache", ramCacheDir)
+	}
+
+	ramEBWebViewDir := getRAMTarget(ebWebViewDir)
+	if pathExists(ramEBWebViewDir) {
+		t.Fatalf("unexpected RAM target %q created for reserved :skip directory", ramEBWebViewDir)
 	}
 }
 

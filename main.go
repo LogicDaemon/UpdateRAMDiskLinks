@@ -47,6 +47,38 @@ type cachedLines struct {
 	err   error
 }
 
+type claimedPathSet map[string]struct{}
+
+type deferredPath struct {
+	key     string
+	valNode *yaml.Node
+}
+
+func normalizeClaimedPath(path string) string {
+	return strings.ToLower(filepath.Clean(path))
+}
+
+func (paths claimedPathSet) add(path string) {
+	if paths == nil || path == "" {
+		return
+	}
+	paths[normalizeClaimedPath(path)] = struct{}{}
+}
+
+func (paths claimedPathSet) addAll(items []string) {
+	for _, item := range items {
+		paths.add(item)
+	}
+}
+
+func (paths claimedPathSet) has(path string) bool {
+	if paths == nil || path == "" {
+		return false
+	}
+	_, ok := paths[normalizeClaimedPath(path)]
+	return ok
+}
+
 func ramDriveRoot() string {
 	if ramDrive == "" {
 		return ""
@@ -348,6 +380,9 @@ func processNode(basePath string, node *yaml.Node) {
 		return
 	}
 
+	claimedPaths := make(claimedPathSet)
+	var deferred []deferredPath
+
 	for i := 0; i < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		valNode := node.Content[i+1]
@@ -385,13 +420,26 @@ func processNode(basePath string, node *yaml.Node) {
 			lines, err := readLinesMemoized(fileName)
 			if err == nil {
 				for _, line := range lines {
-					processPath(basePath, line, valNode)
+					if isWildcardKey(line) {
+						deferred = append(deferred, deferredPath{key: line, valNode: valNode})
+						continue
+					}
+					processPath(basePath, line, valNode, claimedPaths)
 				}
 			}
 			continue
 		}
 
-		processPath(basePath, key, valNode)
+		if isWildcardKey(key) {
+			deferred = append(deferred, deferredPath{key: key, valNode: valNode})
+			continue
+		}
+
+		processPath(basePath, key, valNode, claimedPaths)
+	}
+
+	for _, item := range deferred {
+		processPath(basePath, item.key, item.valNode, claimedPaths)
 	}
 }
 
@@ -469,21 +517,29 @@ func parseDirectiveBool(name string, node *yaml.Node) (bool, error) {
 }
 
 func hasGlobMeta(path string) bool {
-	return strings.ContainsAny(path, "*?[")
+	return strings.ContainsAny(path, "*?")
 }
 
-func processPath(basePath, key string, valNode *yaml.Node) {
-	checkExists := false
-	if strings.HasPrefix(key, "?") {
-		checkExists = true
-		key = key[1:]
-	}
+func isWildcardKey(key string) bool {
+	key = strings.TrimPrefix(key, "?")
+
+	return hasGlobMeta(key)
+}
+
+// resolveConfigPaths expands a config key into concrete filesystem paths.
+// It returns the resolved paths and any resolution error. Keys with a leading
+// '?' are filtered here, so missing optional paths produce an empty result.
+// Exact non-glob paths are added to excludedPaths so later sibling globs skip
+// them at the same mapping level.
+func resolveConfigPaths(basePath, key string, excludedPaths claimedPathSet) ([]string, error) {
+	trimmedKey := strings.TrimPrefix(key, "?")
+	checkExists := len(trimmedKey) != len(key)
+	key = trimmedKey
 
 	var err error
 	key, err = expandEnv(key)
 	if err != nil {
-		log.Printf("Skipping path '%s': %v\n", key, err)
-		return
+		return nil, fmt.Errorf("Skipping path '%s': %w", key, err)
 	}
 
 	var fullPath string
@@ -497,26 +553,46 @@ func processPath(basePath, key string, valNode *yaml.Node) {
 	}
 
 	// Globbing
-	if strings.ContainsAny(fullPath, "*?") {
+	if hasGlobMeta(fullPath) {
 		matches, err := filepath.Glob(fullPath)
 		if err != nil {
-			log.Printf("Skipping glob path '%s': %v\n", fullPath, err)
-			return
+			return nil, fmt.Errorf("Skipping glob path '%s': %w", fullPath, err)
 		}
-		if len(matches) > 0 {
-			for _, match := range matches {
-				processResolvedPath(match, checkExists, valNode)
+
+		filteredMatches := make([]string, 0, len(matches))
+		for _, match := range matches {
+			if excludedPaths.has(match) {
+				continue
 			}
-			return
+			filteredMatches = append(filteredMatches, match)
 		}
+
+		return filteredMatches, nil
+	}
+
+	if checkExists && !pathEntryExists(fullPath) {
+		return nil, nil
+	}
+
+	excludedPaths.add(fullPath)
+
+	return []string{fullPath}, nil
+}
+
+func processPath(basePath, key string, valNode *yaml.Node, excludedPaths claimedPathSet) {
+	resolvedPaths, err := resolveConfigPaths(basePath, key, excludedPaths)
+	if err != nil {
+		log.Print(err)
 		return
 	}
 
-	processResolvedPath(fullPath, checkExists, valNode)
+	for _, resolvedPath := range resolvedPaths {
+		processResolvedPath(resolvedPath, valNode)
+	}
 }
 
-func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) {
-	if checkExists && !pathEntryExists(fullPath) {
+func processResolvedPath(fullPath string, valNode *yaml.Node) {
+	if isSkipNode(valNode) {
 		return
 	}
 
@@ -561,6 +637,18 @@ func processResolvedPath(fullPath string, checkExists bool, valNode *yaml.Node) 
 	} else if valNode.Value == "" && valNode.Kind == 0 || len(valNode.Content) == 0 {
 		linkToRAMDisk(fullPath)
 	}
+}
+
+func isSkipNode(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+
+	if node.Kind == yaml.AliasNode {
+		return isSkipNode(node.Alias)
+	}
+
+	return node.Kind == yaml.ScalarNode && strings.TrimSpace(node.Value) == ":skip"
 }
 
 func tryGetTargetFromGlob(t string) (string, bool) {
