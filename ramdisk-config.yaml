@@ -23,19 +23,20 @@
 # ":exec_post":
 #   - COMPACT /C "%Log%" /Q
 # ":uselinkstarget": true  # keep existing junction/symlink targets instead of repointing them to RAM
-":env":
+# ":env":
   # Env vars starting with "?" are only set if they are not yet defined or empty
   # Note that the order of items in the env section is not guaranteed,
   # so the program must resolve them recursively
   # but once resolved, the result should be saved to customEnv
-  "?APPDATA": "%USERPROFILE%\\AppData\\Roaming"
-  "?LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
-  "?USERPROFILE": "d:\\Users\\LogicDaemon"
-":log": "%RAMDrive%\\RAMDiskLinker.log"  # if relative, base is configDir
+  # "USERPROFILE": "c:\\Users\\%USERNAME%"
+  # "APPDATA": "%USERPROFILE%\\AppData\\Roaming"
+  # "LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
+":log": "%RAMDrive%\\RAMDiskLinker.%USERNAME%.log"  # if relative, base is configDir
 ":uselinkstarget": true  # if true, when updating links, do not change the target path, but only create the destination if it doesn't exist
 
 ":mkdir":
   "Temp":
+    ".mypy_cache":
     "cache":
     "Diagnostics":
     "DiagOutputDir":
@@ -71,7 +72,8 @@
       "Installer\\Logs":
       "Logs":
       "MessageBus":
-      "NvContainer":
+      # if linked, gets recreated by the NV services as a directory
+      # "NvContainer":
       "SessionLogs":
       "UXD":
     "CrashDumps":
@@ -172,6 +174,7 @@
   "?Dropbox": *electron_cache
   "?Dropbox\\Partitions\\*": *electron_cache
   "?Intermedia Unite": *electron_cache
+  "?Intermedia Unite\\Partitions\\*": *electron_cache
   "?npm-cache":
   "?update-hub": *electron_cache
   "?LosslessCut": *electron_cache
@@ -189,11 +192,11 @@
 
 # Local caches (%LOCALAPPDATA%) grouped to reduce repetition
 "%LOCALAPPDATA%":
-  "cache":
-  "IconCache.db":
+  "?cache":
+  "?IconCache.db":
   "?uv\\cache":
-  "Scripts\\software_update\\Downloader\\.mypy_cache":
-    ">": "%RAMDrive%\\Temp\\.mypy_cache"
+  "?Scripts\\software_update\\Downloader\\.mypy_cache":
+      ">": "%RAMDrive%\\Temp\\.mypy_cache"
   "?CrashDumps":
   "?NuGet":
   "?Google\\YAPF":
@@ -223,8 +226,7 @@
       "Notifications":
       # Do not uncomment, breaks hh.exe
       # "WebCache":
-      # Breaks Start Menu search probably
-      # "SharedWebView\\EBWebView":
+      "SharedWebView\\EBWebView":
 
   "?AMD":
     "DxCache":
@@ -283,7 +285,7 @@
       "htmlcache":
       "logs":
 
-  "Programs":
+  "?Programs":
     "?Tor Browser":
       "Browser\\TorBrowser\\Data\\Browser":
         "Caches":
@@ -324,7 +326,7 @@
   "?nomic.ai\\GPT4All":
 
   # Firefox profiles under LocalAppData
-  "Mozilla\\Firefox\\Profiles\\*":
+  "?Mozilla\\Firefox\\Profiles\\*":
 
   # Chrome-based apps: per-app User Data handling
   "?Google\\Chrome": *chrome_user_data
@@ -334,12 +336,12 @@
   "?Microsoft\\Olk\\EBWebView": *chrome_user_data
 
   # Windows AppX caches
-  "Packages":
+  "?Packages":
     # ToDo: exclude some directories
     # because moving those seems to break Start Menu search
     # Packages\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\LocalState\EBWebView
     # Packages\MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy\LocalState\EBWebView
-    "MicrosoftWindows.Client.CBS_cw5n1h2txyewy": &packages_keep_web_view
+    "?MicrosoftWindows.Client.CBS_cw5n1h2txyewy": &packages_keep_web_view
       "AC":
         "INetCache":
         "INetHistory":
@@ -348,7 +350,7 @@
         "Cache":
         "LiveTile":
       "TempState":
-    "MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy": *packages_keep_web_view
+    "?MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy": *packages_keep_web_view
     "*":
       "AC":
         "INetCache":

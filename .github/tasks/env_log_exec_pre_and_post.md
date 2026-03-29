@@ -17,6 +17,7 @@ Implement item 1 from ToDo.md to natively support `:env`, `:log`, `:exec_pre`, a
 - Used `path.IsAbs()` instead of `filepath.IsAbs()` in Windows path processing, which treated valid Windows absolute paths such as `d:\Users\LogicDaemon\AppData\Local` as relative.
 - Processed `:mkdir` as both a directive and a normal path because the directive branch did not `continue`, which caused `:mkdir` to be appended to `configDir`.
 - Joined root RAM-drive paths with `filepath.Join(ramDrive, ...)` while `ramDrive` was stored as `R:`, which produced `R:Temp` instead of `R:\Temp`.
+- Briefly expanded the fallback `LOG` environment variable inside `setupLog`; this caused an unwanted second expansion pass and broke env-provided values that were already finalized.
 
 ## 4. Step-by-step plan
 1.  [x] Add top-level config pre-processing in `main.go` to handle `:env`, `:log`, `:exec_pre`, `:exec_post` before processing link definitions.
@@ -33,6 +34,7 @@ Implement item 1 from ToDo.md to natively support `:env`, `:log`, `:exec_pre`, a
 - Fixed Windows absolute-path detection to use `filepath.IsAbs()`.
 - Fixed root RAM-drive joins to normalize `R:` into `R:\` before joining relative paths.
 - Fixed directive handling so `:mkdir` is not processed as a filesystem path and unknown `:` directives are logged and skipped.
+- Kept `LOG` environment fallback literal in `setupLog`; only explicit `:log` values go through env expansion.
 - Added ACL job tracking so `:exec_post` runs only after queued `icacls` save/restore operations complete.
 - Ran `gofmt -w main.go config_exec.go`.
 - Ran `go build` successfully.

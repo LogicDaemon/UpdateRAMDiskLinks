@@ -14,6 +14,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func closeLogFile() {
+	if currentLogFile == nil {
+		return
+	}
+
+	_ = currentLogFile.Close()
+	currentLogFile = nil
+}
+
 func processEnvBlock(envNode *yaml.Node) error {
 	if envNode.Kind != yaml.MappingNode {
 		return nil
@@ -41,27 +50,28 @@ func processEnvBlock(envNode *yaml.Node) error {
 				continue
 			}
 			exp, err := expandEnv(d.valRaw)
-			if err == nil {
-				d.val = exp
-				d.resolved = true
-				progress = true
+			if err != nil {
+				continue
+			}
+			d.val = exp
+			d.resolved = true
+			progress = true
 
-				k := d.key
-				checkExists := false
-				if strings.HasPrefix(k, "?") {
-					checkExists = true
-					k = k[1:]
-				}
+			k := d.key
+			checkExists := false
+			if strings.HasPrefix(k, "?") {
+				checkExists = true
+				k = k[1:]
+			}
 
-				if checkExists {
-					if existing, ok := getEnv(k); !ok || existing == "" {
-						setEnv(k, exp)
-						os.Setenv(k, exp) // Update OS environment for executed processes
-					}
-				} else {
+			if checkExists {
+				if existing, ok := getEnv(k); !ok || existing == "" {
 					setEnv(k, exp)
 					os.Setenv(k, exp) // Update OS environment for executed processes
 				}
+			} else {
+				setEnv(k, exp)
+				os.Setenv(k, exp) // Update OS environment for executed processes
 			}
 		}
 	}
@@ -74,20 +84,38 @@ func processEnvBlock(envNode *yaml.Node) error {
 	return nil
 }
 
-func setupLog(logPath string) {
+func resolveLogPath(logPath string) (string, error) {
 	if logPath == "" {
-		logPath, ok := getEnv("LOG")
+		var ok bool
+		logPath, ok = getEnv("LOG")
 		if !ok || logPath == "" {
-			return
+			return "", nil
 		}
 	} else {
 		exp, err := expandEnv(logPath)
 		if err != nil {
-			log.Printf("Warning: failed to expand log path '%s': %v", logPath, err)
-			return
+			return "", fmt.Errorf("failed to expand log path '%s': %w", logPath, err)
 		}
 		logPath = exp
 	}
+
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(configDir, logPath)
+	}
+
+	return logPath, nil
+}
+
+func setupLog(logPath string) {
+	resolvedLogPath, err := resolveLogPath(logPath)
+	if err != nil {
+		log.Printf("Warning: %v", err)
+		return
+	}
+	if resolvedLogPath == "" {
+		return
+	}
+	logPath = resolvedLogPath
 
 	if !filepath.IsAbs(logPath) {
 		logPath = filepath.Join(configDir, logPath)
@@ -107,8 +135,13 @@ func setupLog(logPath string) {
 		return
 	}
 
+	previousLogFile := currentLogFile
+	currentLogFile = f
 	mw := io.MultiWriter(os.Stderr, f)
 	log.SetOutput(mw)
+	if previousLogFile != nil {
+		_ = previousLogFile.Close()
+	}
 }
 
 func runLoggedCommand(name string, args []string, workingDir string, display string) error {

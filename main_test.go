@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -63,6 +64,38 @@ func drainACLJobsForTest() {
 	}
 }
 
+func resetSetupLogStateForTest(t *testing.T, testConfigDir string) {
+	t.Helper()
+
+	prevConfigDir := configDir
+	prevWriter := log.Writer()
+	prevLogValue, prevLogWasSet := os.LookupEnv("LOG")
+
+	customEnvMu.Lock()
+	prevCustomEnv := customEnv
+	customEnv = make(map[string]string)
+	customEnvMu.Unlock()
+
+	closeLogFile()
+	log.SetOutput(os.Stderr)
+	configDir = testConfigDir
+
+	t.Cleanup(func() {
+		closeLogFile()
+		log.SetOutput(prevWriter)
+		configDir = prevConfigDir
+		if prevLogWasSet {
+			_ = os.Setenv("LOG", prevLogValue)
+		} else {
+			_ = os.Unsetenv("LOG")
+		}
+
+		customEnvMu.Lock()
+		customEnv = prevCustomEnv
+		customEnvMu.Unlock()
+	})
+}
+
 func TestParseDirectiveBool(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -109,6 +142,46 @@ func TestParseDirectiveBool(t *testing.T) {
 				t.Fatalf("parseDirectiveBool returned %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveLogPathExpandsEnvVarsInExplicitPath(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	logsRoot := filepath.Join(baseDir, "logs-root")
+	t.Setenv("TEST_LOG_ROOT", logsRoot)
+
+	expectedLogPath := filepath.Join(logsRoot, "app.log")
+	got, err := resolveLogPath(`%TEST_LOG_ROOT%\app.log`)
+	if err != nil {
+		t.Fatalf("resolveLogPath returned error: %v", err)
+	}
+
+	if got != expectedLogPath {
+		t.Fatalf("resolveLogPath returned %q, want %q", got, expectedLogPath)
+	}
+}
+
+func TestResolveLogPathUsesLOGEnvironmentValueAsIs(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	expectedLogPath := filepath.Join(baseDir, "from-env.log")
+	if err := os.Setenv("LOG", expectedLogPath); err != nil {
+		t.Fatalf("set LOG environment: %v", err)
+	}
+	if got := os.Getenv("LOG"); got != expectedLogPath {
+		t.Fatalf("LOG environment before setupLog = %q, want %q", got, expectedLogPath)
+	}
+
+	got, err := resolveLogPath("")
+	if err != nil {
+		t.Fatalf("resolveLogPath returned error: %v", err)
+	}
+
+	if got != expectedLogPath {
+		t.Fatalf("resolveLogPath returned %q, want %q", got, expectedLogPath)
 	}
 }
 

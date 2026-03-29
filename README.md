@@ -2,9 +2,11 @@
 
 UpdateRAMDiskLinks is a utility designed to redirect caches, logs, and other frequently written folders to a RAM drive. It does not move existing files; instead, it keeps existing folders where they are (renaming them as backups) and creates links in their original locations so that new data is written to the RAM drive.
 
+You can pass one or more YAML config files on the command line. They are processed strictly from left to right, so an earlier config can define `:env` values that later configs reuse. Relative paths still resolve against the directory of the specific config file that declared them.
+
 ## Configuration & Path Resolution
 
-Paths inside your `ramdisk-config.yaml` support environment variable expansion (e.g. `%APPDATA%`, `%LOCALAPPDATA%`) and are processed with the following relative path resolution rules:
+Paths inside your `ramdisk-config.yaml` support environment variable expansion (e.g. `%APPDATA%`, `%LOCALAPPDATA%`) and are processed with the following relative path resolution rules. When multiple config files are supplied, each file gets its own `configDir` for these relative lookups:
 
 ### 1. Source Keys (Root and Subkeys)
 
@@ -47,7 +49,7 @@ The `<` prefix reads lines from a text file and dynamically injects them as keys
 These special keys must be defined at the root level of your YAML configuration.
 
 - **`:env`:** Define dynamic environment variables to use in path resolutions. Supports recursive expansion. If a key starts with `?` (e.g. `"?APPDATA"`), the variable is only set if it's currently undefined or empty in the OS environment.
-- **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with standard error to a specified file. If the path is relative, it resolves against the configuration directory (`configDir`). The absolute evaluated path of the log will be exported to the `LOG` environment variable for spawned tasks. If `:log` is not provided in the YAML configure, the `LOG` environment variable is used as the file path if present. Alternatively, output will strictly default to `stderr` only.
+- **`:log`:** Directs standard outputs (from the utility and executed subprocesses) along with standard error to a specified file. Environment variables are expanded for explicit `:log` values before relative-path resolution. If the path is relative, it resolves against the configuration directory (`configDir`). The absolute evaluated path of the log will be exported to the `LOG` environment variable for spawned tasks. If `:log` is not provided in the YAML configure, the `LOG` environment variable is used as the file path as-is, without another expansion pass. Alternatively, output will strictly default to `stderr` only.
 - **`:exec_pre` / `:exec_post`:** Arrays of commands to run *before* or *after* the directory processing phase. Commands are parsed with Windows command-line rules and started directly, without wrapping them in `cmd.exe /c`. All standard output and errors are captured to the log, and the exit code is logged as well. Environment variables specified or expanded in `:env` are applied prior to execution. If you specifically need shell syntax, invoke the shell explicitly in the config.
 - **`:uselinkstarget`:** Boolean top-level switch. When enabled, any source that is already a junction/symlink keeps its current destination instead of being repointed to the RAM-disk-derived target. If that preserved destination is missing, the utility recreates it before leaving the existing link in place. Empty value is treated as enabled, so both `":uselinkstarget": true` and a bare `":uselinkstarget":` work.
 

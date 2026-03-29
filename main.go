@@ -29,6 +29,7 @@ var (
 	timeoutSeconds         float64 = -1 // unlimited by default
 	configDir              string
 	useExistingLinksTarget bool
+	currentLogFile         *os.File
 	customEnv              = make(map[string]string)
 	customEnvMu            sync.RWMutex
 	linesCache             = make(map[string]cachedLines)
@@ -969,55 +970,60 @@ func makeLink(source, target string) {
 	}
 }
 
-func main() {
-	if err := initEnv(); err != nil {
-		log.Fatalf("Error: %v\n", err)
-	}
-
-	if err := waitForRAMDrive(); err != nil {
-		log.Fatalf("Error: %v\n", err)
-	}
-
-	go aclWorker()
-	defer func() {
-		close(aclJobs)
-		<-aclDone
-	}()
-
-	if len(os.Args) < 2 {
-		log.Fatalf("Usage: %s <config.yaml>\nConfig file example:\n%s", os.Args[0], example_config)
-	}
-	configPath := os.Args[1]
+func resolveConfigDir(configPath string) string {
 	if absPath, err := filepath.Abs(configPath); err == nil {
-		configDir = filepath.Dir(absPath)
-	} else {
-		configDir = filepath.Dir(configPath)
-		if configDir == "." {
-			configDir, _ = os.Getwd()
+		return filepath.Dir(absPath)
+	}
+
+	resolvedDir := filepath.Dir(configPath)
+	if resolvedDir == "." {
+		if cwd, err := os.Getwd(); err == nil {
+			return cwd
 		}
 	}
 
+	return resolvedDir
+}
+
+func loadConfigDocument(configPath string) (*yaml.Node, error) {
 	b, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Fatalf("Error reading config: %v\n", err)
+		return nil, fmt.Errorf("reading config %q: %w", configPath, err)
 	}
 
 	var root yaml.Node
 	if err := yaml.Unmarshal(b, &root); err != nil {
-		log.Fatalf("Error unmarshaling YAML: %v\n", err)
+		return nil, fmt.Errorf("unmarshaling YAML in %q: %w", configPath, err)
 	}
 
 	if len(root.Content) == 0 {
-		return
+		return nil, nil
 	}
 
 	doc := root.Content[0]
 	if doc.Kind != yaml.MappingNode {
-		log.Fatalf("Expected root mapping node, got %v\n", doc.Kind)
+		return nil, fmt.Errorf("expected root mapping node in %q, got %v", configPath, doc.Kind)
 	}
+
+	return doc, nil
+}
+
+func processConfig(configPath string) error {
+	configDir = resolveConfigDir(configPath)
+
+	doc, err := loadConfigDocument(configPath)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return nil
+	}
+
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":env" {
-			processEnvBlock(doc.Content[i+1])
+			if err := processEnvBlock(doc.Content[i+1]); err != nil {
+				return fmt.Errorf("processing :env in %q: %w", configPath, err)
+			}
 		}
 	}
 
@@ -1026,7 +1032,7 @@ func main() {
 		if doc.Content[i].Value == ":uselinkstarget" {
 			useExistingLinksTarget, err = parseDirectiveBool(":uselinkstarget", doc.Content[i+1])
 			if err != nil {
-				log.Fatalf("Error parsing :uselinkstarget: %v\n", err)
+				return fmt.Errorf("parsing :uselinkstarget in %q: %w", configPath, err)
 			}
 		}
 	}
@@ -1051,6 +1057,34 @@ func main() {
 	for i := 0; i < len(doc.Content); i += 2 {
 		if doc.Content[i].Value == ":exec_post" {
 			runShellCommands(doc.Content[i+1])
+		}
+	}
+
+	return nil
+}
+
+func main() {
+	if err := initEnv(); err != nil {
+		log.Fatalf("Error: %v\n", err)
+	}
+
+	if err := waitForRAMDrive(); err != nil {
+		log.Fatalf("Error: %v\n", err)
+	}
+
+	go aclWorker()
+	defer func() {
+		close(aclJobs)
+		<-aclDone
+	}()
+	defer closeLogFile()
+	if len(os.Args) < 2 {
+		log.Fatalf("Usage: %s <config.yaml> [more-config.yaml ...]\nConfig file example:\n%s", os.Args[0], example_config)
+	}
+
+	for _, configPath := range os.Args[1:] {
+		if err := processConfig(configPath); err != nil {
+			log.Fatalf("Error processing configs: %v\n", err)
 		}
 	}
 }
