@@ -23,6 +23,40 @@ func closeLogFile() {
 	currentLogFile = nil
 }
 
+func envDefinitionKey(key string) string {
+	return strings.ToUpper(strings.TrimPrefix(key, "?"))
+}
+
+func backupAndClearEnvDefinitions(envNode *yaml.Node) map[string]string {
+	backups := make(map[string]string)
+	if envNode == nil || envNode.Kind != yaml.MappingNode {
+		return backups
+	}
+	seenKeys := make(map[string]struct{})
+
+	for j := 0; j < len(envNode.Content); j += 2 {
+		rawKey := envNode.Content[j].Value
+		if strings.HasPrefix(rawKey, "?") {
+			continue
+		}
+
+		canonicalKey := envDefinitionKey(rawKey)
+		if _, seen := seenKeys[canonicalKey]; seen {
+			continue
+		}
+		seenKeys[canonicalKey] = struct{}{}
+
+		value, ok := getEnv(rawKey)
+		if ok {
+			backups[canonicalKey] = value
+		}
+		unsetCustomEnv(rawKey)
+		_ = os.Unsetenv(rawKey)
+	}
+
+	return backups
+}
+
 func processEnvBlock(envNode *yaml.Node) error {
 	if envNode.Kind != yaml.MappingNode {
 		return nil
@@ -41,6 +75,8 @@ func processEnvBlock(envNode *yaml.Node) error {
 		v := envNode.Content[j+1].Value
 		defs = append(defs, &envDef{key: k, valRaw: v})
 	}
+
+	backups := backupAndClearEnvDefinitions(envNode)
 
 	progress := true
 	for progress {
@@ -76,10 +112,14 @@ func processEnvBlock(envNode *yaml.Node) error {
 		}
 	}
 
-	for _, d := range defs {
-		if !d.resolved {
-			log.Printf("Warning: failed to resolve env var %s", d.key)
+	for canonicalKey, backupValue := range backups {
+		if _, ok := getEnv(canonicalKey); ok {
+			continue
 		}
+
+		setEnv(canonicalKey, backupValue)
+		_ = os.Setenv(canonicalKey, backupValue)
+		log.Printf("Restored previous value of %q to %q", canonicalKey, backupValue)
 	}
 	return nil
 }

@@ -23,14 +23,14 @@
 # ":exec_post":
 #   - COMPACT /C "%Log%" /Q
 # ":uselinkstarget": true  # keep existing junction/symlink targets instead of repointing them to RAM
-# ":env":
+":env":
   # Env vars starting with "?" are only set if they are not yet defined or empty
   # Note that the order of items in the env section is not guaranteed,
   # so the program must resolve them recursively
   # but once resolved, the result should be saved to customEnv
   # "USERPROFILE": "c:\\Users\\%USERNAME%"
-  # "APPDATA": "%USERPROFILE%\\AppData\\Roaming"
-  # "LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
+  "APPDATA": "%USERPROFILE%\\AppData\\Roaming"
+  "LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
 ":log": "%RAMDrive%\\RAMDiskLinker.%USERNAME%.log"  # if relative, base is configDir
 ":uselinkstarget": true  # if true, when updating links, do not change the target path, but only create the destination if it doesn't exist
 

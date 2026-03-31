@@ -231,6 +231,16 @@ func setEnv(key, value string) {
 	customEnvMu.Unlock()
 }
 
+func unsetCustomEnv(key string) {
+	customEnvMu.Lock()
+	for existingKey := range customEnv {
+		if strings.EqualFold(existingKey, key) {
+			delete(customEnv, existingKey)
+		}
+	}
+	customEnvMu.Unlock()
+}
+
 func initEnv() error {
 	if ts := os.Getenv("RAMDRIVE_TIMEOUT"); ts != "" {
 		if val, err := strconv.ParseFloat(ts, 64); err == nil {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -163,6 +165,150 @@ func TestResolveLogPathExpandsEnvVarsInExplicitPath(t *testing.T) {
 	}
 }
 
+func TestProcessEnvBlockClearsDeclaredVariablesBeforeResolvingDependencies(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	t.Setenv("USERNAME", "fresh-user")
+
+	staleUserProfile := `c:\Users\stale-user`
+	staleAppData := staleUserProfile + `\AppData\Roaming`
+	staleLocalAppData := staleUserProfile + `\AppData\Local`
+
+	t.Setenv("USERPROFILE", staleUserProfile)
+	t.Setenv("APPDATA", staleAppData)
+	t.Setenv("LOCALAPPDATA", staleLocalAppData)
+
+	setEnv("USERPROFILE", staleUserProfile)
+	setEnv("APPDATA", staleAppData)
+	setEnv("LOCALAPPDATA", staleLocalAppData)
+
+	envNode := parseRootDirectiveNode(t, `
+":env":
+  "USERPROFILE": "c:\\Users\\%USERNAME%"
+  "APPDATA": "%USERPROFILE%\\AppData\\Roaming"
+  "LOCALAPPDATA": "%USERPROFILE%\\AppData\\Local"
+`, ":env")
+
+	if err := processEnvBlock(envNode); err != nil {
+		t.Fatalf("processEnvBlock returned error: %v", err)
+	}
+
+	wantUserProfile := `c:\Users\fresh-user`
+	wantAppData := wantUserProfile + `\AppData\Roaming`
+	wantLocalAppData := wantUserProfile + `\AppData\Local`
+
+	for key, want := range map[string]string{
+		"USERPROFILE":  wantUserProfile,
+		"APPDATA":      wantAppData,
+		"LOCALAPPDATA": wantLocalAppData,
+	} {
+		if got, ok := getEnv(key); !ok || got != want {
+			t.Fatalf("getEnv(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
+		}
+		if got := os.Getenv(key); got != want {
+			t.Fatalf("os.Getenv(%q) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestProcessEnvBlockRestoresBackedUpValueWhenDefinitionStaysUnresolved(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	var logOutput bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logOutput)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
+	originalUserProfile := `c:\Users\stale-user`
+	t.Setenv("USERPROFILE", originalUserProfile)
+	setEnv("USERPROFILE", originalUserProfile)
+
+	envNode := parseRootDirectiveNode(t, `
+":env":
+  "USERPROFILE": "%MISSING_USERPROFILE_BASE%"
+`, ":env")
+
+	if err := processEnvBlock(envNode); err != nil {
+		t.Fatalf("processEnvBlock returned error: %v", err)
+	}
+
+	if got, ok := getEnv("USERPROFILE"); !ok || got != originalUserProfile {
+		t.Fatalf("getEnv(%q) = (%q, %v), want (%q, true)", "USERPROFILE", got, ok, originalUserProfile)
+	}
+	if got := os.Getenv("USERPROFILE"); got != originalUserProfile {
+		t.Fatalf("os.Getenv(%q) = %q, want %q", "USERPROFILE", got, originalUserProfile)
+	}
+
+	logText := logOutput.String()
+	if !strings.Contains(logText, `Restored previous value of "USERPROFILE"`) {
+		t.Fatalf("expected restore warning in log output, got %q", logText)
+	}
+}
+
+func TestProcessEnvBlockDoesNotWarnWhenNothingCanBeRestored(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	var logOutput bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logOutput)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
+	_ = os.Unsetenv("USERPROFILE")
+	unsetCustomEnv("USERPROFILE")
+
+	envNode := parseRootDirectiveNode(t, `
+":env":
+  "USERPROFILE": "%MISSING_USERPROFILE_BASE%"
+`, ":env")
+
+	if err := processEnvBlock(envNode); err != nil {
+		t.Fatalf("processEnvBlock returned error: %v", err)
+	}
+
+	if got, ok := getEnv("USERPROFILE"); ok || got != "" {
+		t.Fatalf("getEnv(%q) = (%q, %v), want (\"\", false)", "USERPROFILE", got, ok)
+	}
+	if got := logOutput.String(); got != "" {
+		t.Fatalf("expected no restore warning when nothing was backed up, got %q", got)
+	}
+}
+
+func TestProcessEnvBlockLeavesOptionalPredefinedVariablesUntouched(t *testing.T) {
+	baseDir := t.TempDir()
+	resetSetupLogStateForTest(t, baseDir)
+
+	userProfile := `c:\Users\fresh-user`
+	existingAppData := `d:\portable\roaming-cache`
+
+	t.Setenv("USERPROFILE", userProfile)
+	t.Setenv("APPDATA", existingAppData)
+	setEnv("USERPROFILE", userProfile)
+	setEnv("APPDATA", existingAppData)
+
+	envNode := parseRootDirectiveNode(t, `
+":env":
+  "?APPDATA": "%USERPROFILE%\\AppData\\Roaming"
+`, ":env")
+
+	if err := processEnvBlock(envNode); err != nil {
+		t.Fatalf("processEnvBlock returned error: %v", err)
+	}
+
+	if got, ok := getEnv("APPDATA"); !ok || got != existingAppData {
+		t.Fatalf("getEnv(%q) = (%q, %v), want (%q, true)", "APPDATA", got, ok, existingAppData)
+	}
+	if got := os.Getenv("APPDATA"); got != existingAppData {
+		t.Fatalf("os.Getenv(%q) = %q, want %q", "APPDATA", got, existingAppData)
+	}
+}
+
 func TestResolveLogPathUsesLOGEnvironmentValueAsIs(t *testing.T) {
 	baseDir := t.TempDir()
 	resetSetupLogStateForTest(t, baseDir)
@@ -172,7 +318,7 @@ func TestResolveLogPathUsesLOGEnvironmentValueAsIs(t *testing.T) {
 		t.Fatalf("set LOG environment: %v", err)
 	}
 	if got := os.Getenv("LOG"); got != expectedLogPath {
-		t.Fatalf("LOG environment before setupLog = %q, want %q", got, expectedLogPath)
+		t.Fatalf("LOG environment before resolveLogPath = %q, want %q", got, expectedLogPath)
 	}
 
 	got, err := resolveLogPath("")
